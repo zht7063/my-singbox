@@ -72,6 +72,10 @@ load_env() {
             SING_BOX_VERSION|VLESS_UUID|REALITY_PRIVATE_KEY|REALITY_PUBLIC_KEY|REALITY_SHORT_ID|SS_PASSWORD|SERVER_ADDRESS)
                 printf -v "$key" '%s' "$value"
                 ;;
+            ISP_SOCKS_ADDR|ISP_SOCKS_USER|ISP_SOCKS_PASS)
+                # Optional ISP outbound settings written by scripts/isp-outbound.sh.
+                # Accepted so they do not trip the whitelist, but never rendered.
+                ;;
             *)
                 die "Unknown key in $label: $key"
                 ;;

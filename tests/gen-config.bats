@@ -60,10 +60,10 @@ run_gen_config() {
 }
 
 @test "gen-config: dies on an unknown .env key" {
-    echo 'ISP_SOCKS_ADDR=1.2.3.4:1080' >> "$PROJECT/.env"
+    echo 'FOO_BAR=1' >> "$PROJECT/.env"
     run_gen_config
     [ "$status" -eq 1 ]
-    [[ "$output" == *"Unknown .env key: ISP_SOCKS_ADDR"* ]]
+    [[ "$output" == *"Unknown .env key: FOO_BAR"* ]]
     [ ! -e "$PROJECT/config.json" ]
 }
 
