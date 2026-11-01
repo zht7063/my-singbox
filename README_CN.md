@@ -48,6 +48,7 @@ bash scripts/start.sh
 | `scripts/gen-config.sh` | 用 `.env` 渲染服务端模板。配置里没有 `REALITY_PUBLIC_KEY` 和 `SERVER_ADDRESS`。 | `config.json` |
 | `scripts/conf-clash.sh` | 用 `.env` 渲染客户端模板。分流规则原样保留。拒绝写入 REALITY 私钥。 | `clash.yaml` |
 | `scripts/start.sh` | `docker compose up -d`，确认容器 `sing-box` 保持运行。 | 运行中的 sing-box |
+| `scripts/isp-outbound.sh` | 可选，不属于快速开始。`--add` 额外开两个端口（`13839` tcp+udp、`18444` tcp），流量经你的静态 ISP SOCKS5 代理出去，并把节点 `shadowsocks-isp`、`vless-reality-isp` 加入 `Proxy` 组；`--remove` 撤销。需要 `jq` 和 Docker 访问权限，本身不需要 `sudo`，也不碰防火墙：端口需要你自己放行。详见 [可选：ISP 出口](#可选isp-出口静态-socks5)。 | 修改 `config.json`、`.env`、`clash.yaml`；备份在 `.isp-backup/` |
 
 三个产出文件已存在时，对应脚本拒绝覆盖。要重新生成，先删除那个文件。
 

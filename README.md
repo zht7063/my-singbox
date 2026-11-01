@@ -48,6 +48,7 @@ If `git` is not installed yet, run `sudo apt-get update && sudo apt-get install 
 | `scripts/gen-config.sh` | Renders the server template from `.env`. The config contains neither `REALITY_PUBLIC_KEY` nor `SERVER_ADDRESS`. | `config.json` |
 | `scripts/conf-clash.sh` | Renders the client template from `.env`. The routing rules are kept as they are. It refuses to write the REALITY private key. | `clash.yaml` |
 | `scripts/start.sh` | Runs `docker compose up -d` and confirms the container `sing-box` stays running. | A running sing-box |
+| `scripts/isp-outbound.sh` | Optional, not part of the quick start. `--add` adds two extra ports (`13839` tcp+udp, `18444` tcp) whose traffic leaves through your static ISP SOCKS5 proxy, and adds the nodes `shadowsocks-isp` and `vless-reality-isp` to the `Proxy` group; `--remove` undoes it. Needs `jq` and Docker access, no `sudo` of its own, and does not touch the firewall: you open the ports yourself. See [Optional: ISP outbound](#optional-isp-outbound-static-socks5-egress). | Edits `config.json`, `.env` and `clash.yaml`; backups in `.isp-backup/` |
 
 If the three output files already exist, the corresponding scripts refuse to overwrite them. To regenerate one, delete that file first.
 
