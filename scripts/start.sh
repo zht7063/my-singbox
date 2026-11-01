@@ -95,6 +95,37 @@ for port in $ports; do
     wait_for_port "$port"
 done
 
+# Shadowsocks 2022 also listens on UDP. Without privileges, ss -ulnp
+# hides the process name; reject the port only when another owner is visible.
+check_udp_listener() {
+    local port=$1
+    local attempt line
+
+    if ! command -v ss >/dev/null 2>&1; then
+        echo "Warning: ss is not installed. Skipping UDP listener check for port ${port}." >&2
+        return 0
+    fi
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if ss -uln | grep -Eq ":${port}[[:space:]]"; then
+            line="$(ss -ulnp 2>/dev/null | grep -E ":${port}[[:space:]]" || true)"
+            if [[ "$line" == *users:* && "$line" != *sing-box* ]]; then
+                show_logs
+                die "UDP port ${port} is not owned by sing-box."
+            fi
+            return 0
+        fi
+        sleep 1
+    done
+
+    show_logs
+    die "UDP port ${port} is not listening."
+}
+
+if [[ "$ports" == *" 8388 "* ]]; then
+    check_udp_listener 8388
+fi
+
 status="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo missing)"
 if [[ "$status" != "running" ]]; then
     show_logs

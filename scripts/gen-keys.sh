@@ -26,6 +26,12 @@ for cmd in docker openssl; do
     fi
 done
 
+# Fail before prompting when the daemon is down
+if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker daemon is not running." >&2
+    exit 1
+fi
+
 is_ipv4() {
     local value=$1 octet
     [[ "$value" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
