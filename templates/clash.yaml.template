@@ -1,40 +1,123 @@
-mixed-port: 7890
-allow-lan: false
-mode: rule
-log-level: info
-ipv6: false
-
 proxies:
-  - name: vless-reality
-    type: vless
-    server: "${SERVER_ADDRESS}"
-    port: 8443
-    uuid: "${VLESS_UUID}"
-    network: tcp
-    udp: true
-    tls: true
-    flow: xtls-rprx-vision
-    servername: www.microsoft.com
-    client-fingerprint: chrome
-    reality-opts:
-      public-key: "${REALITY_PUBLIC_KEY}"
-      short-id: "${REALITY_SHORT_ID}"
-
-  - name: ss-2022
+  - name: "My-sing-box"
     type: ss
     server: "${SERVER_ADDRESS}"
     port: 8388
     cipher: 2022-blake3-aes-128-gcm
     password: "${SS_PASSWORD}"
     udp: true
+  - name: My-VLESS-Reality
+    type: vless
+    server: "${SERVER_ADDRESS}"
+    port: 8443
+    uuid: "${VLESS_UUID}"
+    network: tcp
+    tls: true
+    udp: true
+    packet-encoding: xudp
+    servername: www.microsoft.com
+    client-fingerprint: chrome
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: "${REALITY_PUBLIC_KEY}"
+      short-id: "${REALITY_SHORT_ID}"
 
 proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - vless-reality
-      - ss-2022
+      - My-sing-box
+      - My-VLESS-Reality
       - DIRECT
 
+# 分流规则，自上而下匹配
 rules:
+  # 私有网络，直连
+  - RULE-SET,meta-private,DIRECT
+  - RULE-SET,meta-private-ip,DIRECT,no-resolve
+
+  # AI 服务，强制代理
+  - DOMAIN-SUFFIX,openai.com,PROXY
+  - DOMAIN-SUFFIX,chatgpt.com,PROXY
+  - DOMAIN-SUFFIX,oaistatic.com,PROXY
+  - DOMAIN-SUFFIX,oaiusercontent.com,PROXY
+  - DOMAIN-SUFFIX,anthropic.com,PROXY
+  - DOMAIN-SUFFIX,claude.ai,PROXY
+  - DOMAIN-SUFFIX,claude.com,PROXY
+  - DOMAIN-SUFFIX,claudeusercontent.com,PROXY
+
+  # 常规分流
+  - RULE-SET,meta-proxy,PROXY
+  - RULE-SET,meta-cn,DIRECT
+  - RULE-SET,meta-cn-ip,DIRECT
   - MATCH,PROXY
+
+# 远程规则集
+rule-providers:
+  # 私有域名，直连
+  meta-private:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs
+    path: ./ruleset/meta-private.mrs
+    interval: 86400
+
+  # 私有 IP 段，直连
+  meta-private-ip:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs
+    path: ./ruleset/meta-private-ip.mrs
+    interval: 86400
+
+  # 非中国大陆域名，走代理
+  meta-proxy:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-!cn.mrs
+    path: ./ruleset/meta-proxy.mrs
+    interval: 86400
+
+  # 中国大陆域名，直连
+  meta-cn:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs
+    path: ./ruleset/meta-cn.mrs
+    interval: 86400
+
+  # 中国大陆 IP，直连
+  meta-cn-ip:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs
+    path: ./ruleset/meta-cn-ip.mrs
+    interval: 86400
+
+# DNS 解析
+dns:
+  enable: true
+  ipv6: false
+  listen: 127.0.0.1:1053
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+  proxy-server-nameserver:
+    - "https://223.5.5.5/dns-query#DIRECT"
+  nameserver:
+    - "https://1.1.1.1/dns-query#PROXY"
+    - "https://8.8.8.8/dns-query#PROXY"
+  nameserver-policy:
+    "rule-set:meta-private":
+      - system
+    "rule-set:meta-cn":
+      - "https://223.5.5.5/dns-query#DIRECT"

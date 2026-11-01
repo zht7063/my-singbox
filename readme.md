@@ -33,7 +33,7 @@ bash scripts/start.sh
 | `scripts/conf-clash.sh` | 渲染客户端配置 | `clash.yaml` |
 | `scripts/start.sh` | 启动容器并自检 | 运行中的 sing-box |
 
-`scripts/start.sh` 会执行 `docker compose up -d`，确认容器保持运行，在容器内执行 `sing-box check`，并检查本机 `8388` 和 `8443` 是否接受连接。把生成的 `clash.yaml` 导入客户端即可。客户端默认使用 `vless-reality`，也可以切换到 `ss-2022`。
+`scripts/start.sh` 会执行 `docker compose up -d`，确认容器保持运行，在容器内执行 `sing-box check`，并检查本机 `8388` 和 `8443` 是否接受连接。把生成的 `clash.yaml` 导入客户端即可。客户端默认使用 `My-sing-box`，也可以切换到 `My-VLESS-Reality`。
 
 这三个产出文件已存在时，对应脚本会拒绝覆盖。需要重新生成时，先删除对应文件。`.env`、`config.json` 和 `clash.yaml` 都包含节点凭据。
 
