@@ -39,7 +39,7 @@ assert_unchanged() {
     while IFS= read -r line; do
         value="${line#*=}"
         if [[ -n "$value" ]]; then
-            ! grep -qF -- "$value" "$BATS_TEST_TMPDIR/withisp.$out"
+            refute grep -qF -- "$value" "$BATS_TEST_TMPDIR/withisp.$out"
         fi
     done <<< "$extra"
 }
@@ -51,12 +51,12 @@ assert_unchanged() {
     grep -Fxq '# ISP_SOCKS_ADDR=' "$t"
     grep -Fxq '# ISP_SOCKS_USER=' "$t"
     grep -Fxq '# ISP_SOCKS_PASS=' "$t"
-    ! grep -Eq '^[[:space:]]*ISP_SOCKS_' "$t"
+    refute grep -Eq '^[[:space:]]*ISP_SOCKS_' "$t"
 }
 
 @test "env.template: ISP_SOCKS_EGRESS_IP is the fourth key, commented out and empty" {
     grep -Fxq '# ISP_SOCKS_EGRESS_IP=' "$REPO_ROOT/templates/.env.template"
-    ! grep -Eq '^[[:space:]]*ISP_SOCKS_EGRESS_IP' "$REPO_ROOT/templates/.env.template"
+    refute grep -Eq '^[[:space:]]*ISP_SOCKS_EGRESS_IP' "$REPO_ROOT/templates/.env.template"
 }
 
 @test "env.template: carries the 'filled automatically' comment" {
@@ -72,7 +72,7 @@ assert_unchanged() {
 @test "env.template: output is identical to a template that has no ISP block at all" {
     render_to conf-clash.sh clash.yaml withblock
     grep -viE 'isp' "$PROJECT/templates/.env.template" > "$BATS_TEST_TMPDIR/stripped"
-    ! grep -qi 'isp' "$BATS_TEST_TMPDIR/stripped"
+    refute grep -qi 'isp' "$BATS_TEST_TMPDIR/stripped"
     cp "$BATS_TEST_TMPDIR/stripped" "$PROJECT/templates/.env.template"
     render_to conf-clash.sh clash.yaml noblock
     cmp "$BATS_TEST_TMPDIR/withblock.clash.yaml" "$BATS_TEST_TMPDIR/noblock.clash.yaml"
@@ -81,7 +81,7 @@ assert_unchanged() {
 # ---- gen-config.sh -----------------------------------------------------------
 
 @test "gen-config: no ISP keys at all still renders (regression)" {
-    ! grep -q 'ISP_' "$PROJECT/.env"
+    refute grep -q 'ISP_' "$PROJECT/.env"
     run bash "$PROJECT/scripts/gen-config.sh"
     [ "$status" -eq 0 ]
     jq -e . "$PROJECT/config.json" >/dev/null
@@ -165,7 +165,7 @@ assert_unchanged() {
 # ---- conf-clash.sh -----------------------------------------------------------
 
 @test "conf-clash: no ISP keys at all still renders (regression)" {
-    ! grep -q 'ISP_' "$PROJECT/.env"
+    refute grep -q 'ISP_' "$PROJECT/.env"
     run bash "$PROJECT/scripts/conf-clash.sh"
     [ "$status" -eq 0 ]
     grep -Fq "password: \"$FIXTURE_SS_PASSWORD\"" "$PROJECT/clash.yaml"

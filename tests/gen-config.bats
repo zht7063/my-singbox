@@ -24,7 +24,7 @@ run_gen_config() {
     run_gen_config
     [ "$status" -eq 0 ]
     [ "$(stat -c %a "$PROJECT/config.json")" = "600" ]
-    ! grep -F '${' "$PROJECT/config.json"
+    refute grep -F '${' "$PROJECT/config.json"
 }
 
 @test "gen-config: credentials land beside the right fields" {
@@ -40,8 +40,8 @@ run_gen_config() {
 @test "gen-config: client-only public key and server address are not written" {
     run_gen_config
     [ "$status" -eq 0 ]
-    ! grep -F "$FIXTURE_PUBLIC_KEY" "$PROJECT/config.json"
-    ! grep -F "$FIXTURE_SERVER_ADDRESS" "$PROJECT/config.json"
+    refute grep -F "$FIXTURE_PUBLIC_KEY" "$PROJECT/config.json"
+    refute grep -F "$FIXTURE_SERVER_ADDRESS" "$PROJECT/config.json"
 }
 
 @test "gen-config: keeps the original two inbounds and the direct outbound" {

@@ -23,7 +23,7 @@ run_conf_clash() {
     run_conf_clash
     [ "$status" -eq 0 ]
     [ "$(stat -c %a "$PROJECT/clash.yaml")" = "600" ]
-    ! grep -F '${' "$PROJECT/clash.yaml"
+    refute grep -F '${' "$PROJECT/clash.yaml"
 }
 
 @test "conf-clash: client credentials are filled in" {
@@ -40,7 +40,7 @@ run_conf_clash() {
 @test "conf-clash: never writes the Reality private key" {
     run_conf_clash
     [ "$status" -eq 0 ]
-    ! grep -F "$FIXTURE_PRIVATE_KEY" "$PROJECT/clash.yaml"
+    refute grep -F "$FIXTURE_PRIVATE_KEY" "$PROJECT/clash.yaml"
 }
 
 @test "conf-clash: has the two proxies and the Proxy group" {
@@ -54,7 +54,7 @@ run_conf_clash() {
     grep -Eq '^      - shadowsocks$' "$f"
     grep -Eq '^      - vless-reality$' "$f"
     # No trace of the old names.
-    ! grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$f"
+    refute grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$f"
 }
 
 @test "conf-clash: refuses to overwrite an existing clash.yaml" {
