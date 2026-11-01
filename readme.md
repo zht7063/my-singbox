@@ -10,7 +10,7 @@
 ## 要求
 
 - Linux 服务器。`compose.yaml` 使用 `network_mode: host`。
-- Docker、Docker Compose 插件、openssl，以及可用的交互式终端。
+- Docker、Docker Compose 插件、openssl，以及 curl 或 wget。Debian/Ubuntu 上可用 `apt install curl`。自动检测失败时需要交互式终端。
 - 客户端使用 Mihomo 内核，例如 Clash Verge、FlClash 或 Clash Meta。
 
 ## 部署
@@ -28,7 +28,7 @@ bash scripts/conf-clash.sh
 bash scripts/start.sh
 ```
 
-`SING_BOX_VERSION` 是生成密钥时使用的 `ghcr.io/sagernet/sing-box` 镜像标签。`scripts/gen-keys.sh` 会询问本机公网 IP，并把它写入 `.env` 的 `SERVER_ADDRESS`。私网地址、回环地址和保留地址需要重新输入。
+`SING_BOX_VERSION` 是生成密钥时使用的 `ghcr.io/sagernet/sing-box` 镜像标签。`scripts/gen-keys.sh` 会用 curl 或 wget 访问公网 IP 回显服务，自动检测本机公网地址并写入 `.env` 的 `SERVER_ADDRESS`。优先使用 IPv4，没有公网 IPv4 时再尝试 IPv6。检测失败时才会询问。私网地址、回环地址和保留地址会被拒绝。
 
 | 脚本 | 作用 | 产出 |
 | --- | --- | --- |

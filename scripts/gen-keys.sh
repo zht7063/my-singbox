@@ -26,7 +26,7 @@ for cmd in docker openssl; do
     fi
 done
 
-# Fail before prompting when the daemon is down
+# Fail before generating credentials when the daemon is down
 if ! docker info >/dev/null 2>&1; then
     echo "Error: Docker daemon is not running." >&2
     exit 1
@@ -111,18 +111,95 @@ is_public_ip() {
     fi
 }
 
-while true; do
-    if ! read -r -p "Public IP address of this machine: " SERVER_ADDRESS; then
-        echo "Error: Failed to read the public IP address." >&2
-        exit 1
+trim() {
+    local value=$1
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+# Debian and Ubuntu ship curl and GNU wget. Prefer curl.
+http_get() {
+    local family=$1
+    local url=$2
+    if command -v curl >/dev/null 2>&1; then
+        curl -"$family" -fsS --max-time 8 -A "quick-sing-box-node" "$url" || return 1
+        return 0
     fi
-    SERVER_ADDRESS="${SERVER_ADDRESS#"${SERVER_ADDRESS%%[![:space:]]*}"}"
-    SERVER_ADDRESS="${SERVER_ADDRESS%"${SERVER_ADDRESS##*[![:space:]]}"}"
-    if is_public_ip "$SERVER_ADDRESS"; then
-        break
+    if command -v wget >/dev/null 2>&1; then
+        wget -"$family" -qO- --timeout=8 -U "quick-sing-box-node" "$url" || return 1
+        return 0
     fi
-    echo "Error: Enter a public IP address." >&2
-done
+    return 1
+}
+
+detect_public_ip() {
+    local family url body ip
+    local -a urls
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        return 1
+    fi
+    for family in 4 6; do
+        if [[ "$family" == 4 ]]; then
+            urls=(
+                "https://ipinfo.io/ip"
+                "https://api.ipify.org"
+                "https://ipv4.icanhazip.com"
+                "https://ifconfig.me/ip"
+                "https://api.ip.sb/ip"
+            )
+        else
+            urls=(
+                "https://api6.ipify.org"
+                "https://ipv6.icanhazip.com"
+            )
+        fi
+        for url in "${urls[@]}"; do
+            body="$(http_get "$family" "$url" 2>/dev/null || true)"
+            ip="$(trim "$body")"
+            if is_public_ip "$ip"; then
+                printf '%s\n' "$ip"
+                return 0
+            fi
+        done
+        body="$(http_get "$family" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null || true)"
+        ip="$(printf '%s\n' "$body" | awk -F= '/^ip=/ {print $2; exit}')"
+        ip="$(trim "$ip")"
+        if is_public_ip "$ip"; then
+            printf '%s\n' "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
+prompt_public_ip() {
+    local address
+    while true; do
+        if ! read -r -p "Public IP address of this machine: " address; then
+            echo "Error: Failed to read the public IP address." >&2
+            exit 1
+        fi
+        address="$(trim "$address")"
+        if is_public_ip "$address"; then
+            printf '%s\n' "$address"
+            return 0
+        fi
+        echo "Error: Enter a public IP address." >&2
+    done
+}
+
+echo "Detecting public IP address..."
+if SERVER_ADDRESS="$(detect_public_ip)"; then
+    echo "Detected public IP address: $SERVER_ADDRESS"
+else
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        echo "Error: curl or wget is not installed. On Debian/Ubuntu: apt install curl" >&2
+    else
+        echo "Could not detect a public IP address." >&2
+    fi
+    SERVER_ADDRESS="$(prompt_public_ip)"
+fi
 
 echo "Generating credentials..."
 
