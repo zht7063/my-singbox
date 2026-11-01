@@ -54,7 +54,7 @@ run_conf_clash() {
     grep -Eq '^      - shadowsocks$' "$f"
     grep -Eq '^      - vless-reality$' "$f"
     # No trace of the old names.
-    ! grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$f"
+    refute grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$f"
 }
 
 @test "conf-clash: refuses to overwrite an existing clash.yaml" {

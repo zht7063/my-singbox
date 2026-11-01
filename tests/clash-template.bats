@@ -20,7 +20,7 @@ ORIGINAL_SHA256="169cc1356c9e0c79d7b692c511a69ca12619a781adb433de83903dc8e1fbb36
 }
 
 @test "clash template: no old names are left" {
-    ! grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$T"
+    refute grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$T"
 }
 
 @test "clash template: the new names appear exactly where the old ones did" {
