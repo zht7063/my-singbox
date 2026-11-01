@@ -23,6 +23,18 @@ up_count() { grep -c 'docker compose.* up ' "$STUB_LOG" || true; }
 
 env_value() { grep -m1 "^$1=" "$PROJECT/.env" | cut -d= -f2-; }
 
+# No temp file (they can hold the plaintext or b64 password) may be left behind.
+assert_no_tmp() {
+    local left
+    left=$(find "$PROJECT" -maxdepth 1 -name '.isp-tmp.*')
+    if [ -n "$left" ]; then
+        echo "temp files left behind: $left" >&2
+        return 1
+    fi
+}
+
+backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
+
 # ---------------------------------------------------------------- basics
 
 @test "repo: .gitignore covers the script's runtime files" {
@@ -173,15 +185,32 @@ env_value() { grep -m1 "^$1=" "$PROJECT/.env" | cut -d= -f2-; }
     cmp "$d/.env" "$BATS_TEST_TMPDIR/orig.env"
 }
 
-@test "add: keeps only the last 5 backups" {
+@test "add: a run that changes nothing makes no backup" {
     isp_add_fresh
     [ "$status" -eq 0 ]
+    [ "$(backup_count)" -eq 1 ]
     local _
     for _ in 1 2 3 4 5 6 7; do
         isp_add_keep
         [ "$status" -eq 0 ]
+        [[ "$output" != *"Backup saved"* ]]
     done
-    [ "$(find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d | wc -l)" -le 5 ]
+    [ "$(backup_count)" -eq 1 ]
+}
+
+@test "add: keeps five backups, and the oldest one (the original files) is never rotated away" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    local first i
+    first=$(find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d)
+    for i in 1 2 3 4 5 6 7 8; do
+        isp_add_fresh "" "isp-user$i"
+        [ "$status" -eq 0 ]
+    done
+    [ "$(backup_count)" -eq 5 ]
+    [ -d "$first" ]
+    cmp "$first/config.json" "$BATS_TEST_TMPDIR/orig.json"
+    cmp "$first/.env" "$BATS_TEST_TMPDIR/orig.env"
 }
 
 @test "add: output carries the UDP caveat, the no-fallback note and the cloud security group reminder" {
@@ -500,6 +529,10 @@ expect_add_failure() {
         echo "case '$desc' left a backup" >&2
         return 1
     fi
+    if ! assert_no_tmp; then
+        echo "case '$desc' left temp files" >&2
+        return 1
+    fi
 }
 
 @test "failure paths: bad input is rejected and writes nothing" {
@@ -515,6 +548,11 @@ expect_add_failure() {
     expect_add_failure "password mismatch" 198.51.100.7:1080 u p1 p2 ""
     expect_add_failure "bad expected egress" 198.51.100.7:1080 u p p "not-an-ip"
     expect_add_failure "eof" 198.51.100.7:1080
+    expect_add_failure "ipv6 with 3 groups" "[1:2:3]:1080" u p p ""
+    expect_add_failure "ipv6 with a 5-digit group" "[abcde::1]:1080" u p p ""
+    expect_add_failure "bad expected egress (ipv6, 5 digits)" 198.51.100.7:1080 u p p "abcde::1"
+    expect_add_failure "password that is not UTF-8" 198.51.100.7:1080 u $'ab\xffcd' $'ab\xffcd' ""
+    expect_add_failure "user name that is not UTF-8" 198.51.100.7:1080 $'u\xfe' p p ""
 }
 
 @test "failure paths: SOCKS check, egress mismatch, docker and sing-box check failures write nothing" {
@@ -746,7 +784,7 @@ make_min_path() {
     local t p
     for t in bash env flock base64 mktemp cmp date tr grep find sort rm mv cp chmod chown mkdir \
              basename dirname cat head tail sed awk wc cut stat ls tee readlink realpath uniq \
-             touch ln diff sha256sum xargs printf true false test dd od hostname uname; do
+             touch ln diff sha256sum xargs printf true false test dd od hostname uname iconv; do
         p=$(command -v "$t" 2>/dev/null || true)
         [ -n "$p" ] && [ -x "$p" ] && ln -sf "$p" "$MINBIN/$t"
     done
@@ -803,25 +841,6 @@ make_min_path() {
     [ "$up_line" -lt "$fw_line" ]
 }
 
-@test "firewall ufw: a failing ufw is reported with the ports to open by hand; the working service is kept; a re-run converges" {
-    isp_set backend ufw
-    isp_set fail_fw ufw
-    isp_add_fresh
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"firewall"* ]]
-    [[ "$output" == *"13839/tcp"* ]]
-    [[ "$output" == *"18444/tcp"* ]]
-    # The server side is up and consistent.
-    grep -q isp-socks "$PROJECT/config.json"
-    grep -q '^ISP_SOCKS_ADDR=' "$PROJECT/.env"
-    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$output"
-    # Once the firewall works again, re-running finishes the job.
-    rm "$STUB_STATE/fail_fw"
-    isp_add_keep
-    [ "$status" -eq 0 ]
-    grep -q '^ufw allow 18444/tcp' "$STUB_LOG"
-}
-
 @test "firewall firewalld: opens permanent and runtime ports, removes both" {
     isp_set backend firewalld
     isp_add_fresh
@@ -872,19 +891,413 @@ make_min_path() {
     grep -q '^netfilter-persistent save' "$STUB_LOG"
 }
 
-@test "firewall iptables: a failing iptables is reported and no rule is recorded" {
-    isp_set backend iptables
-    isp_set fail_fw iptables
-    isp_add_fresh
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"firewall"* ]]
-    [ ! -s "$STUB_STATE/ipt_rules" ]
-}
-
 @test "remove cleans up firewall rules even when the config is already clean" {
     isp_set backend ufw
     isp_remove
     [ "$status" -eq 0 ]
     grep -q '^ufw delete allow 13839/tcp' "$STUB_LOG"
+    assert_original_files
+}
+
+# ---------------------------------------------------------------- firewall failure hint
+
+# fw_err: the hint, printed on stderr.
+fw_err() { cat "$ISP_ERR"; }
+
+# assert_fw_hint MODE BACKEND ERRTEXT RULE...: the stderr hint names exactly the
+# given failed rules (port/proto) and has every other required element.
+assert_fw_hint() {
+    local mode=$1 backend=$2 errtext=$3
+    shift 3
+    local err rule port proto other
+    err=$(fw_err)
+    # 1. exactly the failed ports, with protocol
+    for rule in "$@"; do
+        [[ "$err" == *"  - $rule"* ]] || { echo "missing failed rule $rule" >&2; return 1; }
+    done
+    for other in 13839/tcp 13839/udp 18444/tcp; do
+        case " $* " in
+            *" $other "*) ;;
+            *) [[ "$err" != *"$other"* ]] || { echo "lists $other, which did not fail" >&2; return 1; } ;;
+        esac
+    done
+    # 2. the reason: the backend and its error output
+    [[ "$err" == *"backend: $backend"* ]]
+    [[ "$err" == *"$errtext"* ]]
+    # service verified healthy and kept
+    [[ "$err" == *"NOT rolled back"* ]]
+    [[ "$err" == *"non-zero"* ]]
+    # 3. manual commands for all three backends, with the real ports and protos
+    [[ "$err" == *"ufw"*"firewalld"*"iptables"* ]]
+    [[ "$err" == *"firewall-cmd --reload"* ]]
+    [[ "$err" == *"--permanent"* ]]
+    [[ "$err" == *"persistent already"* ]]
+    [[ "$err" == *"netfilter-persistent save"* ]]
+    [[ "$err" == *"iptables-save > /etc/iptables/rules.v4"* ]]
+    [[ "$err" == *"apt-get install -y iptables-persistent"* ]]
+    for rule in "$@"; do
+        port=${rule%%/*}
+        proto=${rule##*/}
+        if [ "$mode" = add ]; then
+            [[ "$err" == *"ufw allow $rule comment my-singbox-isp"* ]]
+            [[ "$err" == *"firewall-cmd --permanent --add-port=$rule"* ]]
+            [[ "$err" == *"iptables -I INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"* ]]
+        else
+            [[ "$err" == *"ufw delete allow $rule"* ]]
+            [[ "$err" == *"firewall-cmd --permanent --remove-port=$rule"* ]]
+            [[ "$err" == *"iptables -D INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"* ]]
+        fi
+    done
+    [[ "$err" == *"security group"* ]]
+    if [ "$mode" = add ]; then
+        # 4/5. cloud reminder, re-run --add, and what the re-run needs
+        [[ "$err" == *"allow"*"in your cloud provider's security group"* ]]
+        [[ "$err" == *"isp-outbound.sh --add"* ]]
+        [[ "$err" == *"remaining steps"* ]]
+        [[ "$err" == *"egress check"* ]]
+        [[ "$err" == *"proxy must be working"* ]]
+    else
+        [[ "$err" == *"isp-outbound.sh --remove"* ]]
+    fi
+    # the password never shows up, on stderr or stdout
+    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$err"
+    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$output"
+}
+
+# The service was healthy, was not rolled back and is still running the ISP config.
+assert_service_kept() {
+    grep -q isp-socks "$PROJECT/config.json"
+    grep -q '^ISP_SOCKS_ADDR=' "$PROJECT/.env"
+    [ "$(up_count)" -eq 1 ]
+    refute grep -q 'Rolling back' "$ISP_ERR"
+    grep -qx 'tcp 13839' "$STUB_STATE/listeners"
+    [ "$(cat "$STUB_STATE/status")" = running ]
+}
+
+@test "firewall failure (add): ufw -> hint with all three ports, ufw as the backend, service kept, exit non-zero" {
+    ISP_SPLIT=1
+    isp_set backend ufw
+    isp_set fail_fw ufw
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    assert_fw_hint add ufw "stub-ufw: ERROR: could not update rules for 13839/tcp" 13839/tcp 13839/udp 18444/tcp
+    assert_service_kept
+    [[ "$(fw_err)" == *"ufw allow 13839/udp comment my-singbox-isp"* ]]
+    [[ "$(fw_err)" == *"ss-isp-in"* ]]
+    [[ "$(fw_err)" == *"vless-reality-isp-in"* ]]
+    assert_no_tmp
+}
+
+@test "firewall failure (add): firewalld -> hint, firewalld as the backend, service kept, exit non-zero" {
+    ISP_SPLIT=1
+    isp_set backend firewalld
+    isp_set fail_fw firewall-cmd
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    assert_fw_hint add firewalld "stub-firewalld: Error: COMMAND_FAILED: could not change 13839/udp" 13839/tcp 13839/udp 18444/tcp
+    assert_service_kept
+    assert_no_tmp
+}
+
+@test "firewall failure (add): iptables -> hint, iptables as the backend, service kept, exit non-zero" {
+    ISP_SPLIT=1
+    isp_set backend iptables
+    isp_set fail_fw iptables
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    assert_fw_hint add iptables "stub-iptables: iptables: Resource temporarily unavailable (18444/tcp)" 13839/tcp 13839/udp 18444/tcp
+    assert_service_kept
+    [ ! -s "$STUB_STATE/ipt_rules" ]
+    assert_no_tmp
+}
+
+@test "firewall failure (add): only the ports that failed are listed (ufw, firewalld, iptables)" {
+    ISP_SPLIT=1
+    local backend cmd text
+    for backend in ufw firewalld iptables; do
+        reset_isp_env
+        cmd=$backend
+        [ "$backend" = firewalld ] && cmd=firewall-cmd
+        isp_set backend "$backend"
+        isp_set fail_fw "$cmd"
+        isp_set fail_fw_rule 13839/udp
+        isp_add_fresh
+        [ "$status" -eq 1 ]
+        case $backend in
+            ufw) text="stub-ufw: ERROR: could not update rules for 13839/udp" ;;
+            firewalld) text="stub-firewalld: Error: COMMAND_FAILED: could not change 13839/udp" ;;
+            iptables) text="stub-iptables: iptables: Resource temporarily unavailable (13839/udp)" ;;
+        esac
+        assert_fw_hint add "$backend" "$text" 13839/udp
+        assert_service_kept
+    done
+}
+
+@test "firewall failure (add): iptables rules saved fine but netfilter-persistent save fails -> hint about persistence" {
+    ISP_SPLIT=1
+    isp_set backend iptables
+    printf '#!/usr/bin/env bash\necho "netfilter-persistent $*" >> "$STUB_LOG"\necho "stub-persist: cannot write /etc/iptables/rules.v4" >&2\nexit 1\n' > "$STUB_DIR/netfilter-persistent"
+    chmod +x "$STUB_DIR/netfilter-persistent"
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    local err
+    err=$(fw_err)
+    [[ "$err" == *"backend: iptables"* ]]
+    [[ "$err" == *"saving the rules failed"* ]]
+    [[ "$err" == *"stub-persist: cannot write /etc/iptables/rules.v4"* ]]
+    [[ "$err" == *"netfilter-persistent save"* ]]
+    [[ "$err" == *"iptables-save > /etc/iptables/rules.v4"* ]]
+    [[ "$err" == *"isp-outbound.sh --add"* ]]
+    [ "$(wc -l < "$STUB_STATE/ipt_rules")" -eq 3 ]
+    assert_service_kept
+}
+
+@test "firewall failure (add): after the ports are opened by hand, re-running --add finishes the job with exit 0" {
+    ISP_SPLIT=1
+    isp_set backend ufw
+    isp_set fail_fw ufw
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    rm "$STUB_STATE/fail_fw"
+    isp_add_keep
+    [ "$status" -eq 0 ]
+    grep -q '^ufw allow 18444/tcp' "$STUB_LOG"
+    refute grep -q 'firewall' "$ISP_ERR"
+    refute grep -q 'Warning' "$ISP_ERR"
+}
+
+@test "firewall failure (add): the password is in neither stderr, the stub log nor its base64 form" {
+    ISP_SPLIT=1
+    isp_set backend ufw
+    isp_set fail_fw ufw
+    isp_add_fresh
+    [ "$status" -eq 1 ]
+    refute grep -qF "$ISP_PASS_FIXTURE" "$ISP_ERR"
+    refute grep -qF "$ISP_PASS_FIXTURE" "$STUB_LOG"
+    refute grep -qF "$(printf %s "$ISP_PASS_FIXTURE" | base64)" "$ISP_ERR"
+}
+
+@test "firewall failure (remove): ufw, firewalld and iptables -> close commands, --remove re-run, exit non-zero" {
+    ISP_SPLIT=1
+    local backend cmd text
+    for backend in ufw firewalld iptables; do
+        reset_isp_env
+        cmd=$backend
+        [ "$backend" = firewalld ] && cmd=firewall-cmd
+        isp_set backend "$backend"
+        isp_add_fresh
+        [ "$status" -eq 0 ]
+        isp_set fail_fw "$cmd"
+        isp_remove
+        [ "$status" -eq 1 ]
+        case $backend in
+            ufw) text="stub-ufw: ERROR: could not update rules for 13839/tcp" ;;
+            firewalld) text="stub-firewalld: Error: COMMAND_FAILED: could not change 13839/tcp" ;;
+            iptables) text="stub-iptables: iptables: Resource temporarily unavailable (13839/tcp)" ;;
+        esac
+        assert_fw_hint remove "$backend" "$text" 13839/tcp 13839/udp 18444/tcp
+        # The service is not rolled back: ISP is gone from config.json and stays gone.
+        refute grep -q isp-socks "$PROJECT/config.json"
+        refute grep -q 'Rolling back' "$ISP_ERR"
+        [ "$(cat "$STUB_STATE/status")" = running ]
+        assert_no_tmp
+    done
+}
+
+@test "firewall failure (remove): only the ports that failed to close are listed" {
+    ISP_SPLIT=1
+    isp_set backend ufw
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    isp_set fail_fw ufw
+    isp_set fail_fw_rule 18444/tcp
+    isp_remove
+    [ "$status" -eq 1 ]
+    assert_fw_hint remove ufw "stub-ufw: ERROR: could not update rules for 18444/tcp" 18444/tcp
+}
+
+# ---------------------------------------------------------------- temp files
+
+@test "temp files: nothing is left behind after answering n to the restart prompt" {
+    isp_stdin "$ISP_ADDR_FIXTURE" "$ISP_USER_FIXTURE" "$ISP_PASS_FIXTURE" "$ISP_PASS_FIXTURE" "" n
+    isp_run --add
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Aborted"* ]]
+    assert_no_tmp
+    assert_original_files
+}
+
+@test "temp files: nothing is left behind after answering n to the restart prompt of --remove" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    isp_stdin n
+    isp_run --remove
+    [ "$status" -ne 0 ]
+    assert_no_tmp
+}
+
+@test "temp files: nothing is left behind after a rollback" {
+    isp_switch break_isp
+    isp_add_fresh
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Rolling back"* ]]
+    assert_no_tmp
+    assert_original_files
+}
+
+@test "temp files: nothing is left behind after a successful add, a no-op add and a remove" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    assert_no_tmp
+    isp_add_keep
+    assert_no_tmp
+    isp_remove
+    assert_no_tmp
+}
+
+@test "temp files: leftovers from an older run are swept at the start of the next run" {
+    printf 'ISP_SOCKS_PASS=b64:old\n' > "$PROJECT/.isp-tmp.stale1"
+    printf 'plaintext\n' > "$PROJECT/.isp-tmp.stale2"
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    assert_no_tmp
+}
+
+# ---------------------------------------------------------------- unhealthy re-run
+
+@test "add again with the ISP config present but the service on the old config: restarts once, verifies, then succeeds" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    printf 'tcp 8388\nudp 8388\ntcp 8443\n' > "$STUB_STATE/listeners"
+    : > "$STUB_LOG"
+    isp_add_keep
+    [ "$status" -eq 0 ]
+    grep -q 'Restarting' <<< "$output"
+    [ "$(up_count)" -eq 1 ]
+    grep -qx 'tcp 13839' "$STUB_STATE/listeners"
+}
+
+@test "add again with the ISP config present and the service still unhealthy after one restart: exit non-zero, nothing reported active, no firewall change" {
+    isp_set backend ufw
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    cp "$PROJECT/config.json" "$BATS_TEST_TMPDIR/cfg.after-add"
+    cp "$PROJECT/.env" "$BATS_TEST_TMPDIR/env.after-add"
+    isp_switch break_isp
+    printf 'tcp 8388\nudp 8388\ntcp 8443\n' > "$STUB_STATE/listeners"
+    : > "$STUB_LOG"
+    isp_add_keep
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"still does not run the ISP outbound"* ]]
+    [[ "$output" != *"ISP outbound is active"* ]]
+    [ "$(up_count)" -eq 1 ]
+    refute grep -q '^ufw allow' "$STUB_LOG"
+    assert_no_tmp
+    [ "$(backup_count)" -eq 1 ]
+    cmp "$PROJECT/config.json" "$BATS_TEST_TMPDIR/cfg.after-add"
+    cmp "$PROJECT/.env" "$BATS_TEST_TMPDIR/env.after-add"
+}
+
+@test "add again, unhealthy, answering n to the restart question: nothing changes" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    printf 'tcp 8388\nudp 8388\ntcp 8443\n' > "$STUB_STATE/listeners"
+    : > "$STUB_LOG"
+    isp_stdin "" "" "" "" n
+    isp_run --add
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Aborted"* ]]
+    [ "$(up_count)" -eq 0 ]
+    assert_no_tmp
+}
+
+# ---------------------------------------------------------------- signals
+
+@test "signal: SIGTERM after config.json was replaced but before the service is verified rolls everything back" {
+    isp_switch term_on_up
+    isp_add_fresh
+    [ "$status" -eq 143 ]
+    [[ "$output" == *"Interrupted by TERM"* ]]
+    [[ "$output" == *"Rolling back"* ]]
+    assert_original_files
+    assert_no_tmp
+    [ "$(up_count)" -eq 2 ]
+    [ "$(cat "$STUB_STATE/listeners")" = "$(printf 'tcp 8388\nudp 8388\ntcp 8443')" ]
+    refute grep -q isp-socks "$PROJECT/config.json"
+}
+
+# ---------------------------------------------------------------- validation details
+
+# The address and egress-IP checks use is_ipv6; load just that function.
+load_is_ipv6() {
+    # shellcheck disable=SC1090
+    source <(sed -n '/^is_ipv6() {/,/^}/p' "$REPO_ROOT/scripts/isp-outbound.sh")
+}
+
+@test "is_ipv6: accepts well-formed addresses" {
+    load_is_ipv6
+    local a
+    for a in ::1 :: 2001:db8::1 fe80::1 1:2:3:4:5:6:7:8 1:2:3:4:5:6:7:: ::2:3:4:5:6:7:8 1::8 ABCD:ef01::1 0:0:0:0:0:0:0:1; do
+        is_ipv6 "$a" || { echo "should accept: $a" >&2; return 1; }
+    done
+}
+
+@test "is_ipv6: rejects 1:2:3, abcde::1 and other malformed input" {
+    load_is_ipv6
+    local a
+    for a in 1:2:3 abcde::1 :1:2 1:2: 1::2::3 1:::2 12345::1 1:2:3:4:5:6:7 1:2:3:4:5:6:7:8:9 1:2:3:4:5:6:7:8:: ::1:2:3:4:5:6:7:8 \
+             :1:2:3:4:5:6:7 1:2:3:4:5:6:7: g::1 ::ffff:1.2.3.4 fe80::1%eth0 "" : 1.2.3.4; do
+        if is_ipv6 "$a"; then echo "should reject: '$a'" >&2; return 1; fi
+    done
+}
+
+@test "password and user name must be valid UTF-8: refused before anything is written" {
+    isp_stdin "$ISP_ADDR_FIXTURE" "$ISP_USER_FIXTURE" $'ab\xffcd' $'ab\xffcd' ""
+    isp_run --add --yes
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"UTF-8"* ]]
+    assert_original_files
+    assert_no_tmp
+    refute grep -q '^docker run' "$STUB_LOG"
+    refute test -d "$PROJECT/.isp-backup"
+}
+
+@test "a valid multi-byte UTF-8 password is accepted" {
+    isp_add_fresh "" "" "pässwörd-密码"
+    [ "$status" -eq 0 ]
+    jq -e '.outbounds[] | select(.tag=="isp-socks") | .password == "pässwörd-密码"' "$PROJECT/config.json"
+}
+
+# ---------------------------------------------------------------- missing trailing newline
+
+@test "add then remove is byte-exact even when .env and clash.yaml have no trailing newline" {
+    head -c -1 "$PROJECT/.env" > "$PROJECT/.env.x" && mv "$PROJECT/.env.x" "$PROJECT/.env"
+    head -c -1 "$PROJECT/clash.yaml" > "$PROJECT/clash.yaml.x" && mv "$PROJECT/clash.yaml.x" "$PROJECT/clash.yaml"
+    chmod 600 "$PROJECT/.env" "$PROJECT/clash.yaml"
+    [ -n "$(tail -c1 "$PROJECT/.env")" ]
+    [ -n "$(tail -c1 "$PROJECT/clash.yaml")" ]
+    cp "$PROJECT/.env" "$BATS_TEST_TMPDIR/orig.env"
+    cp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/orig.yaml"
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    # a second add with the same values is stable
+    local before
+    before=$(isp_snapshot)
+    isp_add_keep
+    [ "$status" -eq 0 ]
+    [ "$(isp_snapshot)" = "$before" ]
+    [ "$(backup_count)" -eq 1 ]
+    isp_remove
+    [ "$status" -eq 0 ]
+    assert_original_files
+}
+
+@test "add then remove is byte-exact for a .env with trailing blank lines" {
+    printf '\n\n' >> "$PROJECT/.env"
+    cp "$PROJECT/.env" "$BATS_TEST_TMPDIR/orig.env"
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    isp_remove
+    [ "$status" -eq 0 ]
     assert_original_files
 }

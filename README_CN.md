@@ -90,16 +90,39 @@ sudo bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 
 流量按入站 tag 分流，`8388` 和 `8443` 仍然直连出站。SOCKS5 代理不可用时，ISP 端口会失败，绝不会回退到直连。
 
-`--add` 的顺序如下。重启之前任何一步失败，都不会写入任何文件：
+`--add` 的顺序如下。重启之前任何一步失败（包括在重启确认处回答 `n`），都不会写入你的任何文件，临时文件也会被删除：
 
-1. 用 SOCKS5 TCP 请求测试代理（凭据通过 stdin 交给 `curl`，不出现在命令行），并把返回的出口 IP 与 `ISP_SOCKS_EGRESS_IP`（设置了的话）比较，否则与代理入口 IP 比较。不一致就停止。
+1. 用 SOCKS5 TCP 请求测试代理（凭据通过 stdin 交给 `curl`，不出现在命令行），并把返回的出口 IP 与 `ISP_SOCKS_EGRESS_IP`（设置了的话）比较，否则与代理入口 IP 比较。不一致就停止。请求经代理访问公共 IP 回显服务，依次尝试直到有一个应答：`https://api.ipify.org`、`https://ipinfo.io/ip`、`https://ipv4.icanhazip.com`、`https://ifconfig.me/ip`。这是脚本唯一访问的外部主机；代理凭据只发给代理，不会发给它们。地址、用户名和密码必须合法（用户名和密码必须是合法的 UTF-8），否则在写入任何文件之前就停止。
 2. 在临时文件中生成新的 `config.json`、`.env`、`clash.yaml`，并用容器正在使用的镜像执行 `sing-box check` 校验配置。
-3. 把三个文件备份到 `.isp-backup/<时间戳>/`（保留最近 5 份）。
-4. 替换 `config.json`，执行 `docker compose up -d --force-recreate`，确认容器在运行且新端口在监听。失败时恢复三个文件并重新创建容器。
-5. 写入 `.env` 和 `clash.yaml`，然后在本机防火墙放行三个端口：`ufw` 或 `firewalld`（都原生持久化），或 `iptables` 规则并通过 `netfilter-persistent` 保存（缺少时自动安装）。没有启用的防火墙就什么都不做。某个防火墙步骤失败时脚本以非零状态退出并列出需要手动放行的端口，重新执行 `--add` 即可补完。
+3. 把三个文件备份到 `.isp-backup/<时间戳>/`。共保留 5 份备份：最旧的一份（第一次修改之前的原始文件，永远不会被轮转删除）加最新的 4 份。没有任何变化的运行不会产生备份。用新凭据重新添加之后，较旧的备份里仍含旧密码（目录权限 `700`，文件 `600`）。
+4. 替换 `config.json`，执行 `docker compose up -d --force-recreate`，确认容器在运行且新端口在监听。失败时恢复三个文件并重新创建容器。如果在 `config.json` 已被替换、服务尚未验证通过之前中断脚本（`Ctrl-C`、`SIGTERM`、`SIGHUP`），同样会执行这个回滚。若 `config.json` 已含 ISP 出口但服务没有在运行它，脚本会重启 sing-box 一次并再次检查；仍不健康就以非零状态退出，不会报告成功，也不会改动其他任何东西（`.env`、`clash.yaml` 和防火墙都不碰）。
+5. 写入 `.env` 和 `clash.yaml`，然后在本机防火墙放行三个端口：`ufw` 或 `firewalld`（都原生持久化），或 `iptables` 规则并通过 `netfilter-persistent` 保存（缺少时自动安装）。没有启用的防火墙就什么都不做。某个防火墙步骤失败时，服务此时已验证健康，所以**不会**回滚；脚本以非零状态退出，并在 stderr 打印提示（见下）。
 6. 提醒你在云厂商的安全组里放行同样的端口。这一步脚本无法代做。
 
-用相同的值连续执行两次 `--add`，结果不变；`--add` 之后再 `--remove`，`config.json`、`.env`、`clash.yaml` 逐字节恢复（也会关闭它开放的防火墙端口）。
+用相同的值连续执行两次 `--add`，结果不变（也不会产生新备份）。`--add` 之后再 `--remove`，对于本项目生成格式的文件，`config.json`、`.env`、`clash.yaml` 逐字节恢复；`.env` 或 `clash.yaml` 末尾没有换行时也会原样恢复（脚本会留一条标记注释用来还原）。`config.json` 由 `jq` 重新序列化，你手工改过的格式会被规范化。`--remove` 还会删除 `.env` 中所有 `ISP_SOCKS_*` 键，包括你自己手写的，并关闭它开放的防火墙端口。
+
+### 防火墙步骤失败时
+
+stderr 上的提示只列出失败的端口，每个都带端口和协议（`13839/tcp`、`13839/udp`、`18444/tcp`），并给出所用的后端（`ufw`、`firewalld` 或 `iptables`）及该后端的错误输出。随后给出三种后端的手动命令，端口和协议都是实际值，例如：
+
+```text
+ufw（规则本身已持久化，无需其他步骤）：
+  ufw allow 13839/udp comment my-singbox-isp
+firewalld（用 --permanent，再 --reload）：
+  firewall-cmd --permanent --add-port=13839/udp
+  firewall-cmd --reload
+iptables（重启后丢失，除非保存）：
+  iptables -I INPUT -p udp --dport 13839 -m comment --comment my-singbox-isp -j ACCEPT
+  netfilter-persistent save        # 或：iptables-save > /etc/iptables/rules.v4
+  （缺少时先安装 iptables-persistent：apt-get install -y iptables-persistent）
+```
+
+提示还会提醒你在云厂商的安全组里放行这些端口。端口放行后，重新执行 `sudo bash scripts/isp-outbound.sh --add` 完成剩余步骤。重新执行会再次询问地址、用户名和密码（密码留空表示沿用已保存的），并再次经代理做出口检查，所以重新执行时**代理必须可用**；代理不可用时，手动开好端口就行了。`--remove` 方向相反：提示列出未能关闭的端口，并给出对应的 `ufw delete allow`、`firewall-cmd --permanent --remove-port` 加 `--reload`、`iptables -D` 命令，并让你重新执行 `--remove`。
+
+关于防火墙改动的两点说明：
+
+- `ufw` 和 `firewalld` 按端口删除规则，不按 `my-singbox-isp` 注释匹配。如果你在运行脚本之前自己放行过同一端口，`--remove` 会把那条规则一起删掉。
+- `netfilter-persistent save`（以及 `iptables-save`）保存的是当前**整个** iptables 规则集，不只是本脚本的规则，其中包括 Docker、fail2ban 等其他工具添加的规则。
 
 说明：
 
@@ -107,7 +130,7 @@ sudo bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 - `clash.yaml` 新增两个节点 `shadowsocks-isp`、`vless-reality-isp`，以及包含它们的 `select` 组 `Proxy-ISP`，位于 `# BEGIN my-singbox-isp` 和 `# END my-singbox-isp` 标记之间。`Proxy` 组和所有规则不变，不在客户端选择 `Proxy-ISP` 就不会有流量走它。**之后请在客户端重新导入 `clash.yaml`。**
 - 脚本只按当前名称 `shadowsocks`、`vless-reality` 查找源节点。如果 `clash.yaml` 是改名之前生成的，会提示并停止；删除 `clash.yaml` 后重新运行 `scripts/conf-clash.sh`。
 - 只测试经代理的 TCP。`13839` 上的 Shadowsocks UDP 仅在 SOCKS5 代理支持 UDP ASSOCIATE 时可用。
-- 同一时间只能运行一次（锁文件 `.isp.lock`）。运行时文件 `.isp-backup/`、`.isp.lock`、`.isp-tmp.*` 已写入 `.gitignore`。
+- 同一时间只能运行一次（锁文件 `.isp.lock`）。运行时文件 `.isp-backup/`、`.isp.lock`、`.isp-tmp.*` 已写入 `.gitignore`。`.isp-tmp.*` 可能含密码；脚本结束时会删除它们，被强杀的运行留下的残留会在下次运行开始时清掉。
 
 ## 目录
 

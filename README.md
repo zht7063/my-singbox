@@ -90,16 +90,39 @@ It must run as root (it exits otherwise) and installs `jq` with `apt-get` if `jq
 
 Traffic is routed by inbound tag, so `8388` and `8443` still go out directly. If the SOCKS5 proxy goes down, the ISP ports fail; they never fall back to a direct connection.
 
-What `--add` does, in this order. If any step before the restart fails, nothing has been written:
+What `--add` does, in this order. If any step before the restart fails (including answering `n` to the restart question), none of your files has been written and the temporary files are deleted again:
 
-1. Tests the proxy with a SOCKS5 TCP request (credentials are passed to `curl` on stdin, never on the command line) and compares the egress IP it reports with `ISP_SOCKS_EGRESS_IP` if you set one, otherwise with the proxy's entry IP. A mismatch stops the run.
+1. Tests the proxy with a SOCKS5 TCP request (credentials are passed to `curl` on stdin, never on the command line) and compares the egress IP it reports with `ISP_SOCKS_EGRESS_IP` if you set one, otherwise with the proxy's entry IP. A mismatch stops the run. The request goes through the proxy to public IP echo services, tried in this order until one answers: `https://api.ipify.org`, `https://ipinfo.io/ip`, `https://ipv4.icanhazip.com`, `https://ifconfig.me/ip`. These are the only external hosts the script contacts; the proxy credentials go to the proxy only, never to them. The proxy address, username and password must be valid (the password and username must be valid UTF-8), or the run stops before anything is written.
 2. Builds the new `config.json`, `.env` and `clash.yaml` in temporary files and validates the config with `sing-box check` using the image your container runs.
-3. Backs up all three files to `.isp-backup/<timestamp>/` (the last 5 are kept).
-4. Replaces `config.json`, then `docker compose up -d --force-recreate` and checks that the container is running and the new ports listen. On failure it restores all three files and recreates the container again.
-5. Writes `.env` and `clash.yaml`, then opens the three ports in the local firewall: `ufw` or `firewalld` (both persist natively), or `iptables` rules saved through `netfilter-persistent`, which is installed when it is missing. With no active firewall it does nothing. If a firewall step fails the script exits non-zero and lists the ports to open by hand; re-running `--add` finishes the job.
+3. Backs up all three files to `.isp-backup/<timestamp>/`. Five backups are kept: the oldest one (the files as they were before the first change; it is never rotated away) and the four newest. A run that changes nothing makes no backup. After you re-add with new credentials, the older backups still contain the old password (the directories are `700`, the files `600`).
+4. Replaces `config.json`, then `docker compose up -d --force-recreate` and checks that the container is running and the new ports listen. On failure it restores all three files and recreates the container again. The same rollback runs if you interrupt the script (`Ctrl-C`, `SIGTERM`, `SIGHUP`) after `config.json` was replaced and before the service was verified. If `config.json` already has the ISP outbound but the service is not running it, the script restarts sing-box once and checks again; if it is still unhealthy it exits non-zero, never reports success, and changes nothing else (`.env`, `clash.yaml` and the firewall are not touched).
+5. Writes `.env` and `clash.yaml`, then opens the three ports in the local firewall: `ufw` or `firewalld` (both persist natively), or `iptables` rules saved through `netfilter-persistent`, which is installed when it is missing. With no active firewall it does nothing. If a firewall step fails, the service is already verified healthy, so it is **not** rolled back. The script exits non-zero and prints a hint on stderr (see below).
 6. Reminds you to open the same ports in your cloud provider's security group. The script cannot do that for you.
 
-Running `--add` twice with the same values changes nothing, and `--remove` after `--add` restores `config.json`, `.env` and `clash.yaml` byte for byte (it also closes the firewall ports it opened).
+Running `--add` twice with the same values changes nothing (and makes no new backup). `--remove` after `--add` restores `config.json`, `.env` and `clash.yaml` byte for byte for files in the format this project generates, including a `.env` or `clash.yaml` that has no trailing newline (the script leaves a marker comment so it can put that back). `config.json` is re-serialised by `jq`, so formatting you changed by hand in it is normalised. `--remove` also deletes any `ISP_SOCKS_*` keys in `.env`, including ones you wrote yourself, and closes the firewall ports it opened.
+
+### If a firewall step fails
+
+The hint on stderr lists only the ports that failed, each with port and protocol (`13839/tcp`, `13839/udp`, `18444/tcp`), the backend that was used (`ufw`, `firewalld` or `iptables`) and that backend's error output. It then gives the manual commands for all three backends with the real ports, for example:
+
+```text
+ufw (rules are persistent already, nothing more to do):
+  ufw allow 13839/udp comment my-singbox-isp
+firewalld (use --permanent, then --reload):
+  firewall-cmd --permanent --add-port=13839/udp
+  firewall-cmd --reload
+iptables (lost on reboot unless saved):
+  iptables -I INPUT -p udp --dport 13839 -m comment --comment my-singbox-isp -j ACCEPT
+  netfilter-persistent save        # or: iptables-save > /etc/iptables/rules.v4
+  (install iptables-persistent first if missing: apt-get install -y iptables-persistent)
+```
+
+It also reminds you to allow the ports in the cloud provider's security group. Once the ports are open, re-run `sudo bash scripts/isp-outbound.sh --add` to finish the remaining steps. The re-run asks for the address, username and password again (leave the password blank to keep the stored one) and repeats the egress check through the proxy, so **the proxy must be working** when you re-run it; if it is not, open the ports by hand and you are done. The same happens for `--remove` in reverse: the hint lists the ports that could not be closed, with the matching `ufw delete allow`, `firewall-cmd --permanent --remove-port` plus `--reload`, and `iptables -D` commands, and tells you to re-run `--remove`.
+
+Two caveats about the firewall changes:
+
+- `ufw` and `firewalld` rules are removed by port, not by the `my-singbox-isp` comment. If you opened the same port yourself before running the script, `--remove` closes that rule too.
+- `netfilter-persistent save` (and `iptables-save`) saves the whole current iptables ruleset, not only this script's rules, including rules added by other tools such as Docker or fail2ban.
 
 Notes:
 
@@ -107,7 +130,7 @@ Notes:
 - `clash.yaml` gets two new nodes, `shadowsocks-isp` and `vless-reality-isp`, and a new `select` group `Proxy-ISP` that contains them. They sit between `# BEGIN my-singbox-isp` and `# END my-singbox-isp` markers. The `Proxy` group and every rule stay as they are, so nothing is routed to `Proxy-ISP` unless you pick it in the client. **Re-import `clash.yaml` in your clients afterwards.**
 - The script finds the source nodes only by their current names, `shadowsocks` and `vless-reality`. If your `clash.yaml` was generated before the rename, it stops with a hint; delete `clash.yaml` and run `scripts/conf-clash.sh` again.
 - Only TCP through the proxy is tested. Shadowsocks UDP on `13839` works only if the SOCKS5 proxy supports UDP ASSOCIATE.
-- Only one run at a time (lock file `.isp.lock`). Runtime files `.isp-backup/`, `.isp.lock` and `.isp-tmp.*` are in `.gitignore`.
+- Only one run at a time (lock file `.isp.lock`). Runtime files `.isp-backup/`, `.isp.lock` and `.isp-tmp.*` are in `.gitignore`. The `.isp-tmp.*` files can hold the password; they are deleted when the script ends, and leftovers from a killed run are swept at the start of the next run.
 
 ## Directory layout
 

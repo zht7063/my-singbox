@@ -81,7 +81,7 @@ Do not edit the clash template's rules. Do not add `url-test`, `fallback`, `load
 
 ## ISP outbound (optional)
 
-Do not run `scripts/isp-outbound.sh` as part of a normal deployment. Run it only when the user explicitly asks for an ISP/static SOCKS5 egress and supplies the proxy address, username and password. It needs root, restarts the container, opens firewall ports and edits `config.json`, `.env` and `clash.yaml` (backups go to `.isp-backup/`). It never touches SSH. Never print the proxy password. After it succeeds, tell the user to open `13839/tcp`, `13839/udp` and `18444/tcp` in the cloud security group and to re-import `clash.yaml` (new group `Proxy-ISP`). `--remove` undoes it.
+Do not run `scripts/isp-outbound.sh` as part of a normal deployment. Run it only when the user explicitly asks for an ISP/static SOCKS5 egress and supplies the proxy address, username and password. It needs root, restarts the container, opens firewall ports and edits `config.json`, `.env` and `clash.yaml` (backups go to `.isp-backup/`). It never touches SSH. Never print the proxy password. After it succeeds, tell the user to open `13839/tcp`, `13839/udp` and `18444/tcp` in the cloud security group and to re-import `clash.yaml` (new group `Proxy-ISP`). If it exits non-zero after printing a firewall hint on stderr, the service is healthy and was deliberately not rolled back; relay the hint (ports, backend, commands, security group, re-run `--add`). The egress check contacts only api.ipify.org, ipinfo.io, icanhazip.com and ifconfig.me through the proxy. `--remove` undoes it.
 
 ## Verify
 

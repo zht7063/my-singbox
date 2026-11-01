@@ -15,8 +15,12 @@
 #   docker_down      docker info fails
 #   no_container     the sing-box container does not exist
 #   fail_curl        every curl call fails
+#   term_on_up       compose up with the ISP config sends SIGTERM to the script
+#                    (the container keeps running the old config)
 # Value files: uid (default 0), egress_ip (default 198.51.100.7), backend
-# (none|ufw|firewalld|iptables), fail_fw (a command name that must fail).
+# (none|ufw|firewalld|iptables), fail_fw (a command name that must fail),
+# fail_fw_rule (optional PORT/PROTO: only that rule fails; default all rules).
+# A failing firewall stub prints "stub-<name>: ... " on stderr.
 
 load helpers
 
@@ -117,6 +121,10 @@ case "$1" in
             up)
                 if grep -q isp-socks "$proj/config.json"; then
                     [[ -e "$S/fail_up_isp" ]] && exit 1
+                    if [[ -e "$S/term_on_up" ]]; then
+                        kill -TERM "$PPID"
+                        exit 0
+                    fi
                     if [[ -e "$S/break_isp" ]]; then
                         echo exited > "$S/status"
                         : > "$S/listeners"
@@ -167,7 +175,15 @@ if [[ "$1" == status ]]; then
     if [[ "$(cat "$STUB_STATE/backend")" == ufw ]]; then echo "Status: active"; else echo "Status: inactive"; fi
     exit 0
 fi
-[[ "$(cat "$STUB_STATE/fail_fw" 2>/dev/null)" == ufw ]] && exit 1
+if [[ "$(cat "$STUB_STATE/fail_fw" 2>/dev/null)" == ufw ]]; then
+    rule=$2
+    [[ "$1" == delete ]] && rule=$3
+    only=$(cat "$STUB_STATE/fail_fw_rule" 2>/dev/null || true)
+    if [[ -z "$only" || "$only" == "$rule" ]]; then
+        echo "stub-ufw: ERROR: could not update rules for $rule" >&2
+        exit 1
+    fi
+fi
 exit 0
 STUB
 
@@ -179,7 +195,18 @@ if [[ "$1" == --state ]]; then
     if [[ "$(cat "$S/backend")" == firewalld ]]; then echo running; exit 0; fi
     echo "not running"; exit 252
 fi
-[[ "$(cat "$S/fail_fw" 2>/dev/null)" == firewall-cmd ]] && exit 1
+if [[ "$(cat "$S/fail_fw" 2>/dev/null)" == firewall-cmd ]]; then
+    case "$*" in
+        *--add-port=*|*--remove-port=*)
+            rule=${*##*-port=}
+            rule=${rule%% *}
+            only=$(cat "$S/fail_fw_rule" 2>/dev/null || true)
+            if [[ -z "$only" || "$only" == "$rule" ]]; then
+                echo "stub-firewalld: Error: COMMAND_FAILED: could not change $rule" >&2
+                exit 1
+            fi ;;
+    esac
+fi
 scope=run
 args=()
 for a in "$@"; do
@@ -209,7 +236,6 @@ case "$1" in
         exit 0 ;;
     -C|-I|-D)
         mode=$1
-        [[ "$mode" != -C && "$(cat "$S/fail_fw" 2>/dev/null)" == iptables ]] && exit 1
         proto=""; port=""
         while (($#)); do
             case "$1" in
@@ -218,6 +244,13 @@ case "$1" in
             esac
             shift
         done
+        if [[ "$mode" != -C && "$(cat "$S/fail_fw" 2>/dev/null)" == iptables ]]; then
+            only=$(cat "$S/fail_fw_rule" 2>/dev/null || true)
+            if [[ -z "$only" || "$only" == "$port/$proto" ]]; then
+                echo "stub-iptables: iptables: Resource temporarily unavailable ($port/$proto)" >&2
+                exit 1
+            fi
+        fi
         line="-A INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"
         case "$mode" in
             -C) grep -qxF -- "$line" "$rules" ;;
@@ -292,8 +325,15 @@ isp_stdin() {
 }
 
 # isp_run ARGS...: run isp-outbound.sh with standard input from $ISP_STDIN.
+# With ISP_SPLIT=1, stderr goes to the file $ISP_ERR and $output holds stdout only.
 isp_run() {
-    run bash "$ISP" "$@" < "${ISP_STDIN:-/dev/null}"
+    if [[ -n "${ISP_SPLIT:-}" ]]; then
+        ISP_ERR="$BATS_TEST_TMPDIR/stderr.txt"
+        export ISP_ERR
+        run bash -c 'exec bash "$@" 2>"$ISP_ERR"' _ "$ISP" "$@" < "${ISP_STDIN:-/dev/null}"
+    else
+        run bash "$ISP" "$@" < "${ISP_STDIN:-/dev/null}"
+    fi
 }
 
 # isp_add_fresh [ADDR USER PASS EGRESS]: first-time Add (prompts: address,
