@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Regression tests for the optional ISP_SOCKS_* .env keys. gen-config.sh and
+# Regression tests for the optional ISP_SOCKS_* .env keys (ADDR, USER, PASS, EGRESS_IP). gen-config.sh and
 # conf-clash.sh must accept them without ever rendering them, and must behave
 # exactly as before when they are absent.
 
@@ -11,11 +11,12 @@ setup() {
 }
 
 # Value sets appended to .env. Each is a newline-separated list of lines.
-ISP_EMPTY=$'ISP_SOCKS_ADDR=\nISP_SOCKS_USER=\nISP_SOCKS_PASS='
-ISP_B64=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER=b64:dXNlci5uYW1l\nISP_SOCKS_PASS=b64:cEBzczp3L3JkIzEkSE9NRSBgaWRgOyJhJ2JcZA+/=='
-ISP_B64_IPV6=$'ISP_SOCKS_ADDR=[2001:db8::1]:1080\nISP_SOCKS_USER=b64:+/+/\nISP_SOCKS_PASS=b64:A=='
+ISP_EMPTY=$'ISP_SOCKS_ADDR=\nISP_SOCKS_USER=\nISP_SOCKS_PASS=\nISP_SOCKS_EGRESS_IP='
+ISP_B64=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER=b64:dXNlci5uYW1l\nISP_SOCKS_PASS=b64:cEBzczp3L3JkIzEkSE9NRSBgaWRgOyJhJ2JcZA+/==\nISP_SOCKS_EGRESS_IP=198.51.100.99'
+ISP_B64_IPV6=$'ISP_SOCKS_ADDR=[2001:db8::1]:1080\nISP_SOCKS_USER=b64:+/+/\nISP_SOCKS_PASS=b64:A==\nISP_SOCKS_EGRESS_IP=2001:db8::99'
 ISP_RAW=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER=us er\nISP_SOCKS_PASS=p@ss:w/rd#1 $HOME `id` "a\'b\\c"'
 ISP_ONE_KEY=$'ISP_SOCKS_PASS=b64:c2VjcmV0'
+ISP_EGRESS_ONLY=$'ISP_SOCKS_EGRESS_IP=198.51.100.99'
 
 # render SCRIPT OUTPUT_NAME -> run the script, then move its output to
 # $BATS_TEST_TMPDIR/<label>.<OUTPUT_NAME> so it can be re-rendered.
@@ -51,6 +52,11 @@ assert_unchanged() {
     grep -Fxq '# ISP_SOCKS_USER=' "$t"
     grep -Fxq '# ISP_SOCKS_PASS=' "$t"
     ! grep -Eq '^[[:space:]]*ISP_SOCKS_' "$t"
+}
+
+@test "env.template: ISP_SOCKS_EGRESS_IP is the fourth key, commented out and empty" {
+    grep -Fxq '# ISP_SOCKS_EGRESS_IP=' "$REPO_ROOT/templates/.env.template"
+    ! grep -Eq '^[[:space:]]*ISP_SOCKS_EGRESS_IP' "$REPO_ROOT/templates/.env.template"
 }
 
 @test "env.template: carries the 'filled automatically' comment" {
@@ -101,6 +107,10 @@ assert_unchanged() {
     assert_unchanged gen-config.sh config.json "$ISP_ONE_KEY"
 }
 
+@test "gen-config: output is byte-identical with only ISP_SOCKS_EGRESS_IP set" {
+    assert_unchanged gen-config.sh config.json "$ISP_EGRESS_ONLY"
+}
+
 @test "gen-config: ISP keys placed before the other keys are accepted" {
     render_to gen-config.sh config.json baseline
     { printf '%s\n' "$ISP_B64"; cat "$PROJECT/.env"; } > "$PROJECT/.env.new"
@@ -132,9 +142,17 @@ assert_unchanged() {
     [[ "$output" == *"Duplicate .env key: ISP_SOCKS_ADDR"* ]]
 }
 
-@test "gen-config: only the three ISP keys are whitelisted" {
+@test "gen-config: a duplicated ISP_SOCKS_EGRESS_IP still dies" {
+    printf '%s\n%s\n' 'ISP_SOCKS_EGRESS_IP=198.51.100.1' 'ISP_SOCKS_EGRESS_IP=' >> "$PROJECT/.env"
+    run bash "$PROJECT/scripts/gen-config.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Duplicate .env key: ISP_SOCKS_EGRESS_IP"* ]]
+    [ ! -e "$PROJECT/config.json" ]
+}
+
+@test "gen-config: only the four ISP keys are whitelisted" {
     local key
-    for key in ISP_SOCKS ISP_SOCKS_PASSWORD ISP_SOCKS_ADDRESS ISP_EXPECTED_EGRESS_IP isp_socks_addr FOO_BAR; do
+    for key in ISP_SOCKS ISP_SOCKS_PASSWORD ISP_SOCKS_ADDRESS ISP_SOCKS_EGRESS ISP_SOCKS_EGRESS_IPV4 ISP_EXPECTED_EGRESS_IP isp_socks_egress_ip FOO_BAR; do
         write_env
         echo "$key=x" >> "$PROJECT/.env"
         run bash "$PROJECT/scripts/gen-config.sh"
@@ -173,6 +191,10 @@ assert_unchanged() {
     assert_unchanged conf-clash.sh clash.yaml "$ISP_ONE_KEY"
 }
 
+@test "conf-clash: output is byte-identical with only ISP_SOCKS_EGRESS_IP set" {
+    assert_unchanged conf-clash.sh clash.yaml "$ISP_EGRESS_ONLY"
+}
+
 @test "conf-clash: ISP keys never satisfy a required key" {
     write_env SERVER_ADDRESS=
     printf '%s\n' "$ISP_B64" >> "$PROJECT/.env"
@@ -202,9 +224,17 @@ assert_unchanged() {
     [ "$status" -eq 0 ]
 }
 
-@test "conf-clash: only the three ISP keys are whitelisted" {
+@test "conf-clash: a duplicated ISP_SOCKS_EGRESS_IP still dies" {
+    printf '%s\n%s\n' 'ISP_SOCKS_EGRESS_IP=198.51.100.1' 'ISP_SOCKS_EGRESS_IP=' >> "$PROJECT/.env"
+    run bash "$PROJECT/scripts/conf-clash.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Duplicate key in .env: ISP_SOCKS_EGRESS_IP"* ]]
+    [ ! -e "$PROJECT/clash.yaml" ]
+}
+
+@test "conf-clash: only the four ISP keys are whitelisted" {
     local key
-    for key in ISP_SOCKS ISP_SOCKS_PASSWORD ISP_SOCKS_ADDRESS ISP_EXPECTED_EGRESS_IP isp_socks_addr FOO_BAR; do
+    for key in ISP_SOCKS ISP_SOCKS_PASSWORD ISP_SOCKS_ADDRESS ISP_SOCKS_EGRESS ISP_SOCKS_EGRESS_IPV4 ISP_EXPECTED_EGRESS_IP isp_socks_egress_ip FOO_BAR; do
         write_env
         echo "$key=x" >> "$PROJECT/.env"
         run bash "$PROJECT/scripts/conf-clash.sh"
