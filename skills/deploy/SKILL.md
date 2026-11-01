@@ -1,0 +1,99 @@
+---
+name: deploy
+description: Deploy this repo's sing-box node on a Linux server at /opt/sing-box and hand the exported clash.yaml to mihomo. Use when installing, deploying, verifying, rolling back, or uninstalling this node. Do not use it to change an unrelated sing-box server.
+---
+
+# Deploy this sing-box node
+
+The scripts do the work. Stay inside `/opt/sing-box/` and do not invent a second install path, a systemd unit, or extra config files elsewhere on the system.
+
+## Prerequisites
+
+- Linux server with root or sudo.
+- Docker, the Docker Compose plugin (`docker compose version`), and openssl. `docker info` must succeed before any script asks a question.
+- Ports free on the host, and open in the host firewall and the cloud security group: `8388/tcp`, `8388/udp`, `8443/tcp`.
+- An interactive terminal. `scripts/gen-keys.sh` reads the public IP from the terminal.
+
+## Leave other sing-box installs alone
+
+If the server already runs sing-box from anything other than this repo, stop. Read that install's `config.json` and do not write to it, restart it, or remove it.
+
+Match a client to that file:
+
+- Copy listen ports, UUIDs, Reality public key, short ID, server name, and Shadowsocks method and password only as they appear in the server file.
+- Set `flow: xtls-rprx-vision` on the client only when that server user already sets `flow`.
+- Do not derive or change the server private key.
+
+This repo's install is the git checkout at `/opt/sing-box/` whose `compose.yaml` is the one from this repo. If that directory already has `.env`, `config.json`, or `clash.yaml`, the matching script refuses to overwrite. Leave those files in place and run only the scripts whose outputs are missing.
+
+## Install
+
+```bash
+git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+cd /opt/sing-box
+```
+
+Generated files stay in this directory, next to `compose.yaml`. Do not copy them to `/etc`, `/usr/local`, or a home directory.
+
+Run, from `/opt/sing-box`:
+
+```bash
+SING_BOX_VERSION=latest bash scripts/gen-keys.sh
+bash scripts/gen-config.sh
+bash scripts/conf-clash.sh
+bash scripts/start.sh
+```
+
+| Script | Asks | Writes |
+| --- | --- | --- |
+| `scripts/gen-keys.sh` | Requires `SING_BOX_VERSION`. Checks `docker` and `openssl`, then `docker info`. Prompts `Public IP address of this machine:` and repeats until the address is a public IP. Private, loopback, and reserved addresses are rejected. | `.env` (mode `600`): image tag, VLESS UUID, Reality private and public keys, Reality short ID, Shadowsocks 2022 password, `SERVER_ADDRESS`. |
+| `scripts/gen-config.sh` | Nothing. Requires `.env` and `templates/config.json.template`. | `config.json` (mode `600`). Server inbound only. It does not embed `REALITY_PUBLIC_KEY` or `SERVER_ADDRESS`. |
+| `scripts/conf-clash.sh` | Nothing. Loads `templates/.env.template`, then `.env` overrides it. | `clash.yaml` (mode `600`) for mihomo. The Reality private key is refused. Rules are copied from the template. |
+| `scripts/start.sh` | Nothing. Requires `compose.yaml`, `config.json`, the Compose plugin, and a running daemon. | Runs `docker compose up -d`, waits until container `sing-box` stays up, runs `sing-box check` inside it, checks each `listen_port` on `127.0.0.1`, and checks UDP `8388` with `ss -uln` when `ss` exists. Missing `ss` is a warning, not a failure. Prints `Self-check passed. Ports: ...` |
+
+`compose.yaml` uses `network_mode: host` and the image `ghcr.io/sagernet/sing-box:latest`. It does not read `SING_BOX_VERSION`.
+
+## Image
+
+Use `sing-box:latest` by default (`SING_BOX_VERSION=latest` and the image line already in `compose.yaml`).
+
+If that image fails to start or fails `sing-box check`, pin the image and stop there. In `/opt/sing-box/compose.yaml` set:
+
+```yaml
+image: ghcr.io/sagernet/sing-box:1.14.4
+```
+
+Then run `docker compose up -d` again from `/opt/sing-box`. If key generation itself failed on `latest`, delete only this repo's generated `.env`, `config.json`, and `clash.yaml`, and rerun the four scripts with `SING_BOX_VERSION=1.14.4`. Do not edit the scripts.
+
+## Reality SNI
+
+The default is `www.microsoft.com` (`server_name`, the Reality handshake server, and the client `servername`).
+
+If a real client connection fails, change those three fields together and restart. Do not change anything under `rules:` or `rule-providers:` in the template or in `clash.yaml`. Try `www.intel.com`, then `www.nvidia.com`. Keep the server name and the client `servername` identical.
+
+## Client
+
+Hand over `/opt/sing-box/clash.yaml`. The mihomo client selects `My-sing-box` by default and can switch to `My-VLESS-Reality`. Both are under the `select` group `PROXY`.
+
+Do not edit the clash template's rules. Do not add `url-test`, `fallback`, `load-balance`, or any other automatic speed-test selection.
+
+## Verify
+
+1. `bash scripts/start.sh` prints `Self-check passed`.
+2. From a machine other than the server, check the public IP: `8388/tcp`, `8388/udp`, and `8443/tcp`. A successful localhost check is not this step.
+3. Domestic direct-connection is a mihomo-core check. Terminal commands stay off the mihomo listen port: do not `curl -x` that port and do not export `http_proxy`, `https_proxy`, or `all_proxy` to it. Verify in a browser by following the `vercel-labs/agent-browser` skill. Open a destination the exported rules send `DIRECT` and confirm it loads.
+
+## SSH
+
+Never modify SSH configuration. That includes `sshd_config`, `authorized_keys`, passwords, and user accounts. Opening 8388 and 8443 does not involve SSH.
+
+## Rollback
+
+From the install directory only:
+
+```bash
+cd /opt/sing-box
+docker compose down
+```
+
+This stops and removes this repo's container. It does not delete the checkout. Do not run it against a sing-box install that this repo did not create.
