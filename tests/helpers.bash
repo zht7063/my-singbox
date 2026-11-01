@@ -123,3 +123,13 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()'
 }
+
+# refute CMD...: fail the test if CMD succeeds. Use this instead of `! CMD`:
+# bash's errexit ignores a negated command, so `! grep ...` never fails a test.
+refute() {
+    if "$@"; then
+        echo "expected failure, but this succeeded: $*" >&2
+        return 1
+    fi
+    return 0
+}
