@@ -1,3 +1,5 @@
+[English](README.md) | **简体中文**
+
 # Quick Sing-box Node
 
 在 Linux 上用 Docker 运行 sing-box，并导出给 Mihomo 使用的 `clash.yaml`。
