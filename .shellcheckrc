@@ -1,0 +1,7 @@
+# ShellCheck configuration for scripts/*.sh (see .github/workflows/ci.yml).
+
+# SC2016 (info): "Expressions don't expand in single quotes".
+# gen-config.sh and conf-clash.sh match and substitute the literal template
+# placeholders (for example '${SS_PASSWORD}') on purpose. They must NOT be
+# expanded, so the single quotes are correct and the warning is a false positive.
+disable=SC2016
