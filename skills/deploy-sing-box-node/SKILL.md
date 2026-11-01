@@ -79,6 +79,10 @@ Hand over `/opt/sing-box/clash.yaml`. The mihomo client selects `shadowsocks` by
 
 Do not edit the clash template's rules. Do not add `url-test`, `fallback`, `load-balance`, or any other automatic speed-test selection.
 
+## ISP outbound (optional)
+
+Do not run `scripts/isp-outbound.sh` as part of a normal deployment. Run it only when the user explicitly asks for an ISP/static SOCKS5 egress and supplies the proxy address, username and password. It needs root, restarts the container, opens firewall ports and edits `config.json`, `.env` and `clash.yaml` (backups go to `.isp-backup/`). It never touches SSH. Never print the proxy password. After it succeeds, tell the user to open `13839/tcp`, `13839/udp` and `18444/tcp` in the cloud security group and to re-import `clash.yaml` (new group `Proxy-ISP`). `--remove` undoes it.
+
 ## Verify
 
 1. `bash scripts/start.sh` prints `Self-check passed`.

@@ -70,6 +70,45 @@ cd /opt/sing-box
 docker compose down
 ```
 
+## 可选：ISP 出口（静态 SOCKS5）
+
+`scripts/isp-outbound.sh` 是可选脚本。不运行就什么都不变：三个节点仍用 `8388` 和 `8443`，其他脚本也不依赖它。已有静态 ISP SOCKS5 代理、想多开两个出口走该代理（而不是服务器自身 IP）的端口时才用。
+
+```bash
+cd /opt/sing-box
+sudo bash scripts/isp-outbound.sh            # 菜单：添加 / 移除
+sudo bash scripts/isp-outbound.sh --add      # 添加或更新
+sudo bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
+```
+
+必须以 root 运行（否则直接退出）；缺少 `jq` 时用 `apt-get` 自动安装。脚本会询问代理地址（`IPv4:端口` 或 `[IPv6]:端口`）、用户名、密码，以及可选的预期出口 IP。
+
+| 新增 | 端口 | 出口 |
+| --- | --- | --- |
+| sing-box 入站 `ss-isp-in`（克隆自 `ss-in`，加密方式和密码相同） | `13839` tcp+udp | SOCKS5 代理 |
+| sing-box 入站 `vless-reality-isp-in`（克隆自 `vless-reality-in`，UUID 和密钥相同） | `18444` tcp | SOCKS5 代理 |
+
+流量按入站 tag 分流，`8388` 和 `8443` 仍然直连出站。SOCKS5 代理不可用时，ISP 端口会失败，绝不会回退到直连。
+
+`--add` 的顺序如下。重启之前任何一步失败，都不会写入任何文件：
+
+1. 用 SOCKS5 TCP 请求测试代理（凭据通过 stdin 交给 `curl`，不出现在命令行），并把返回的出口 IP 与 `ISP_SOCKS_EGRESS_IP`（设置了的话）比较，否则与代理入口 IP 比较。不一致就停止。
+2. 在临时文件中生成新的 `config.json`、`.env`、`clash.yaml`，并用容器正在使用的镜像执行 `sing-box check` 校验配置。
+3. 把三个文件备份到 `.isp-backup/<时间戳>/`（保留最近 5 份）。
+4. 替换 `config.json`，执行 `docker compose up -d --force-recreate`，确认容器在运行且新端口在监听。失败时恢复三个文件并重新创建容器。
+5. 写入 `.env` 和 `clash.yaml`，然后在本机防火墙放行三个端口：`ufw` 或 `firewalld`（都原生持久化），或 `iptables` 规则并通过 `netfilter-persistent` 保存（缺少时自动安装）。没有启用的防火墙就什么都不做。某个防火墙步骤失败时脚本以非零状态退出并列出需要手动放行的端口，重新执行 `--add` 即可补完。
+6. 提醒你在云厂商的安全组里放行同样的端口。这一步脚本无法代做。
+
+用相同的值连续执行两次 `--add`，结果不变；`--add` 之后再 `--remove`，`config.json`、`.env`、`clash.yaml` 逐字节恢复（也会关闭它开放的防火墙端口）。
+
+说明：
+
+- `.env` 增加四个可选键：`ISP_SOCKS_ADDR`、`ISP_SOCKS_USER`、`ISP_SOCKS_PASS`、`ISP_SOCKS_EGRESS_IP`。用户名和密码以 `b64:<base64>` 存储，因为 Docker Compose 也会读取 `.env`，否则 `$` 等字符会被误解析。密码不会被打印，也不会出现在命令行。
+- `clash.yaml` 新增两个节点 `shadowsocks-isp`、`vless-reality-isp`，以及包含它们的 `select` 组 `Proxy-ISP`，位于 `# BEGIN my-singbox-isp` 和 `# END my-singbox-isp` 标记之间。`Proxy` 组和所有规则不变，不在客户端选择 `Proxy-ISP` 就不会有流量走它。**之后请在客户端重新导入 `clash.yaml`。**
+- 脚本只按当前名称 `shadowsocks`、`vless-reality` 查找源节点。如果 `clash.yaml` 是改名之前生成的，会提示并停止；删除 `clash.yaml` 后重新运行 `scripts/conf-clash.sh`。
+- 只测试经代理的 TCP。`13839` 上的 Shadowsocks UDP 仅在 SOCKS5 代理支持 UDP ASSOCIATE 时可用。
+- 同一时间只能运行一次（锁文件 `.isp.lock`）。运行时文件 `.isp-backup/`、`.isp.lock`、`.isp-tmp.*` 已写入 `.gitignore`。
+
 ## 目录
 
 ```text

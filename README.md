@@ -70,6 +70,45 @@ cd /opt/sing-box
 docker compose down
 ```
 
+## Optional: ISP outbound (static SOCKS5 egress)
+
+`scripts/isp-outbound.sh` is optional. Skip it and nothing changes: the three nodes keep using `8388` and `8443`, and no other script depends on it. Use it when you have a static ISP SOCKS5 proxy and want two extra ports whose traffic leaves through that proxy instead of the server's own IP.
+
+```bash
+cd /opt/sing-box
+sudo bash scripts/isp-outbound.sh            # menu: add / remove
+sudo bash scripts/isp-outbound.sh --add      # add or update
+sudo bash scripts/isp-outbound.sh --remove   # remove everything it added
+```
+
+It must run as root (it exits otherwise) and installs `jq` with `apt-get` if `jq` is missing. It asks for the proxy address (`IPv4:port` or `[IPv6]:port`), username and password, and an optional expected egress IP.
+
+| Added | Port | Goes out through |
+| --- | --- | --- |
+| sing-box inbound `ss-isp-in` (clone of `ss-in`, same method and password) | `13839` tcp+udp | the SOCKS5 proxy |
+| sing-box inbound `vless-reality-isp-in` (clone of `vless-reality-in`, same UUID and keys) | `18444` tcp | the SOCKS5 proxy |
+
+Traffic is routed by inbound tag, so `8388` and `8443` still go out directly. If the SOCKS5 proxy goes down, the ISP ports fail; they never fall back to a direct connection.
+
+What `--add` does, in this order. If any step before the restart fails, nothing has been written:
+
+1. Tests the proxy with a SOCKS5 TCP request (credentials are passed to `curl` on stdin, never on the command line) and compares the egress IP it reports with `ISP_SOCKS_EGRESS_IP` if you set one, otherwise with the proxy's entry IP. A mismatch stops the run.
+2. Builds the new `config.json`, `.env` and `clash.yaml` in temporary files and validates the config with `sing-box check` using the image your container runs.
+3. Backs up all three files to `.isp-backup/<timestamp>/` (the last 5 are kept).
+4. Replaces `config.json`, then `docker compose up -d --force-recreate` and checks that the container is running and the new ports listen. On failure it restores all three files and recreates the container again.
+5. Writes `.env` and `clash.yaml`, then opens the three ports in the local firewall: `ufw` or `firewalld` (both persist natively), or `iptables` rules saved through `netfilter-persistent`, which is installed when it is missing. With no active firewall it does nothing. If a firewall step fails the script exits non-zero and lists the ports to open by hand; re-running `--add` finishes the job.
+6. Reminds you to open the same ports in your cloud provider's security group. The script cannot do that for you.
+
+Running `--add` twice with the same values changes nothing, and `--remove` after `--add` restores `config.json`, `.env` and `clash.yaml` byte for byte (it also closes the firewall ports it opened).
+
+Notes:
+
+- `.env` gets four optional keys: `ISP_SOCKS_ADDR`, `ISP_SOCKS_USER`, `ISP_SOCKS_PASS` and `ISP_SOCKS_EGRESS_IP`. The username and password are stored as `b64:<base64>`, because Docker Compose also reads `.env` and would otherwise mangle characters such as `$`. The password is never printed or put on a command line.
+- `clash.yaml` gets two new nodes, `shadowsocks-isp` and `vless-reality-isp`, and a new `select` group `Proxy-ISP` that contains them. They sit between `# BEGIN my-singbox-isp` and `# END my-singbox-isp` markers. The `Proxy` group and every rule stay as they are, so nothing is routed to `Proxy-ISP` unless you pick it in the client. **Re-import `clash.yaml` in your clients afterwards.**
+- The script finds the source nodes only by their current names, `shadowsocks` and `vless-reality`. If your `clash.yaml` was generated before the rename, it stops with a hint; delete `clash.yaml` and run `scripts/conf-clash.sh` again.
+- Only TCP through the proxy is tested. Shadowsocks UDP on `13839` works only if the SOCKS5 proxy supports UDP ASSOCIATE.
+- Only one run at a time (lock file `.isp.lock`). Runtime files `.isp-backup/`, `.isp.lock` and `.isp-tmp.*` are in `.gitignore`.
+
 ## Directory layout
 
 ```text
