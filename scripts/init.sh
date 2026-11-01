@@ -34,7 +34,7 @@ is_installed() {
     [[ "$status" == "install ok installed" ]]
 }
 
-packages=(ca-certificates curl openssl iproute2 git)
+packages=(ca-certificates curl openssl iproute2 git jq)
 if ! command -v awk >/dev/null 2>&1; then
     packages+=(gawk)
 fi
@@ -76,6 +76,7 @@ report_cmd git
 report_cmd curl
 report_cmd wget
 report_cmd openssl
+report_cmd jq
 report_cmd awk
 report_cmd grep
 report_cmd dirname

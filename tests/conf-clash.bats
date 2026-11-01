@@ -66,10 +66,10 @@ run_conf_clash() {
 }
 
 @test "conf-clash: dies on an unknown .env key" {
-    echo 'ISP_SOCKS_ADDR=1.2.3.4:1080' >> "$PROJECT/.env"
+    echo 'FOO_BAR=1' >> "$PROJECT/.env"
     run_conf_clash
     [ "$status" -eq 1 ]
-    [[ "$output" == *"Unknown key in .env: ISP_SOCKS_ADDR"* ]]
+    [[ "$output" == *"Unknown key in .env: FOO_BAR"* ]]
     [ ! -e "$PROJECT/clash.yaml" ]
 }
 

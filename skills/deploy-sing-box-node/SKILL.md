@@ -79,6 +79,10 @@ Hand over `/opt/sing-box/clash.yaml`. The mihomo client selects `shadowsocks` by
 
 Do not edit the clash template's rules. Do not add `url-test`, `fallback`, `load-balance`, or any other automatic speed-test selection.
 
+## ISP outbound (optional)
+
+Do not run `scripts/isp-outbound.sh` as part of a normal deployment. Run it only when the user explicitly asks for an ISP/static SOCKS5 egress and supplies the proxy address, username and password. It needs no sudo or root of its own and installs nothing, but it needs `jq` (installed by `scripts/init.sh`) and access to Docker (run it as a user in the `docker` group, or with `sudo`); if either is missing it stops before writing anything, with a message saying what to do. It does not touch the firewall. It restarts the container and edits `config.json`, `.env` (the proxy values as plain text, password in double quotes, `600`) and `clash.yaml` (backups go to `.isp-backup/`; the two ISP nodes are added to the existing `Proxy` group, no new group). It never touches SSH. Never print the proxy password. After `--add` succeeds the script prints an ACTION REQUIRED notice: relay it and tell the user to allow `13839/tcp`, `13839/udp` and `18444/tcp` themselves, in the local firewall and in the cloud security group, and to re-import `clash.yaml`. After `--remove` it prints the matching note that the ports can be closed. The egress check contacts only api.ipify.org, ipinfo.io, icanhazip.com and ifconfig.me through the proxy, and tests TCP only: UDP egress is untested and depends on the ISP proxy supporting UDP ASSOCIATE. `bash scripts/isp-outbound.sh --remove` undoes it, restores `clash.yaml` byte for byte and removes the `ISP_SOCKS_*` keys.
+
 ## Verify
 
 1. `bash scripts/start.sh` prints `Self-check passed`.

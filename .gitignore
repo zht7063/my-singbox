@@ -1,3 +1,6 @@
 .env
 config.json
 clash.yaml
+.isp-backup/
+.isp.lock
+.isp-tmp.*

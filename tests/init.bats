@@ -18,3 +18,8 @@ setup() {
     [[ "$output" == *"run as root"* ]]
     [ "$(stub_call_count '^apt-get ')" -eq 0 ]
 }
+
+@test "init: installs jq (needed by scripts/isp-outbound.sh) and reports it" {
+    grep -Eq '^packages=\(.* jq\)$' "$REPO_ROOT/scripts/init.sh"
+    grep -Eq '^report_cmd jq$' "$REPO_ROOT/scripts/init.sh"
+}
