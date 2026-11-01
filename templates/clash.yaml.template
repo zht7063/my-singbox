@@ -1,0 +1,40 @@
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+
+proxies:
+  - name: vless-reality
+    type: vless
+    server: "${SERVER_ADDRESS}"
+    port: 8443
+    uuid: "${VLESS_UUID}"
+    network: tcp
+    udp: true
+    tls: true
+    flow: xtls-rprx-vision
+    servername: www.microsoft.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "${REALITY_PUBLIC_KEY}"
+      short-id: "${REALITY_SHORT_ID}"
+
+  - name: ss-2022
+    type: ss
+    server: "${SERVER_ADDRESS}"
+    port: 8388
+    cipher: 2022-blake3-aes-128-gcm
+    password: "${SS_PASSWORD}"
+    udp: true
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - vless-reality
+      - ss-2022
+      - DIRECT
+
+rules:
+  - MATCH,PROXY
