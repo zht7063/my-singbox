@@ -46,9 +46,9 @@ is_ipv4() {
 }
 
 is_public_ipv4() {
-    local value=$1 a b c d
+    local value=$1 a b c
     is_ipv4 "$value" || return 1
-    IFS=. read -r a b c d <<< "$value"
+    IFS=. read -r a b c _ <<< "$value"
     if ((a == 0 || a == 10 || a == 127 || a >= 224)); then
         return 1
     fi

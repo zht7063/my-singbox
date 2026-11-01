@@ -80,8 +80,7 @@ fi
 
 wait_for_port() {
     local port=$1
-    local attempt
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
         if bash -c "echo >/dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
             return 0
         fi
@@ -99,14 +98,14 @@ done
 # hides the process name; reject the port only when another owner is visible.
 check_udp_listener() {
     local port=$1
-    local attempt line
+    local line
 
     if ! command -v ss >/dev/null 2>&1; then
         echo "Warning: ss is not installed. Skipping UDP listener check for port ${port}." >&2
         return 0
     fi
 
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
         if ss -uln | grep -Eq ":${port}[[:space:]]"; then
             line="$(ss -ulnp 2>/dev/null | grep -E ":${port}[[:space:]]" || true)"
             if [[ "$line" == *users:* && "$line" != *sing-box* ]]; then
