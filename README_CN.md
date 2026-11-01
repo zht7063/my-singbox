@@ -19,7 +19,7 @@
 
 - Debian/Ubuntu。部署目录可写，文件都放在 `/opt/sing-box/`。
 - Docker、Docker Compose 插件（`docker compose version`），以及正在运行的 Docker daemon。
-- Debian/Ubuntu 先运行 `sudo bash scripts/init.sh`。它只安装缺失的非 Docker 依赖（`ca-certificates`、`curl`、`openssl`、提供 `ss` 的 `iproute2`、`git`；没有 `awk`、`grep` 或 `coreutils` 时也装上），不安装 Docker，也不改 SSH、防火墙、用户或密码。
+- Debian/Ubuntu 先运行 `sudo bash scripts/init.sh`。它只安装缺失的非 Docker 依赖（`ca-certificates`、`curl`、`openssl`、提供 `ss` 的 `iproute2`、`git`、`jq`（`isp-outbound.sh` 要用）；没有 `awk`、`grep` 或 `coreutils` 时也装上），不安装 Docker，也不改 SSH、防火墙、用户或密码。
 - openssl、curl（没有 curl 时 `gen-keys.sh` 接受 wget）。检测公网 IP 失败时才需要交互式终端。
 - `ss`（`iproute2`）。没有它时 `start.sh` 只警告，并跳过 UDP 检查。
 - 防火墙和安全组放行 `8388/tcp`、`8388/udp`、`8443/tcp`。
@@ -76,12 +76,17 @@ docker compose down
 
 ```bash
 cd /opt/sing-box
-sudo bash scripts/isp-outbound.sh            # 菜单：添加 / 移除
-sudo bash scripts/isp-outbound.sh --add      # 添加或更新
-sudo bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
+bash scripts/isp-outbound.sh            # 菜单：添加 / 移除
+bash scripts/isp-outbound.sh --add      # 添加或更新
+bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 ```
 
-必须以 root 运行（否则直接退出）；缺少 `jq` 时用 `apt-get` 自动安装。脚本会询问代理地址（`IPv4:端口` 或 `[IPv6]:端口`）、用户名、密码，以及可选的预期出口 IP。
+不需要 root，也不安装任何东西。写入任何文件之前，它会先检查两个前提：
+
+- `jq`。`sudo bash scripts/init.sh` 会安装它（或 `sudo apt-get install -y jq`）。缺少时脚本立即停止，提示 `jq is not installed. Run scripts/init.sh (sudo bash scripts/init.sh) or install jq ... Nothing was changed.`
+- 能访问 Docker。用 `docker` 组里的用户运行，或用 `sudo`。Docker socket 报 `permission denied` 时立即停止，提示 `permission denied while talking to the Docker daemon ... Nothing was changed.` 并给出两种办法：用 `sudo` 运行，或把当前用户加入该组（`sudo usermod -aG docker "$USER"`，然后退出并重新登录）。项目目录或其中的文件不可写时同样提前停止，并给出对应提示。
+
+脚本不碰防火墙：端口需要你自己放行（以及之后自己关闭），见下文。脚本会询问代理地址（`IPv4:端口` 或 `[IPv6]:端口`）、用户名、密码，以及可选的预期出口 IP。
 
 | 新增 | 端口 | 出口 |
 | --- | --- | --- |
@@ -93,42 +98,50 @@ sudo bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 `--add` 的顺序如下。重启之前任何一步失败（包括在重启确认处回答 `n`），都不会写入你的任何文件，临时文件也会被删除：
 
 1. 用 SOCKS5 TCP 请求测试代理（凭据通过 stdin 交给 `curl`，不出现在命令行），并把返回的出口 IP 与 `ISP_SOCKS_EGRESS_IP`（设置了的话）比较，否则与代理入口 IP 比较。不一致就停止。请求经代理访问公共 IP 回显服务，依次尝试直到有一个应答：`https://api.ipify.org`、`https://ipinfo.io/ip`、`https://ipv4.icanhazip.com`、`https://ifconfig.me/ip`。这是脚本唯一访问的外部主机；代理凭据只发给代理，不会发给它们。地址、用户名和密码必须合法（用户名和密码必须是合法的 UTF-8），否则在写入任何文件之前就停止。
-2. 在临时文件中生成新的 `config.json`、`.env`、`clash.yaml`，并用容器正在使用的镜像执行 `sing-box check` 校验配置。
+2. 在临时文件中生成新的 `.env`、`config.json`、`clash.yaml`。`config.json` 用从新 `.env` 读回的值生成，脚本会检查读回的值与你输入的一致。并用容器正在使用的镜像执行 `sing-box check` 校验配置。
 3. 把三个文件备份到 `.isp-backup/<时间戳>/`。共保留 5 份备份：最旧的一份（第一次修改之前的原始文件，永远不会被轮转删除）加最新的 4 份。没有任何变化的运行不会产生备份。用新凭据重新添加之后，较旧的备份里仍含旧密码（目录权限 `700`，文件 `600`）。
-4. 替换 `config.json`，执行 `docker compose up -d --force-recreate`，确认容器在运行且新端口在监听。失败时恢复三个文件并重新创建容器。如果在 `config.json` 已被替换、服务尚未验证通过之前中断脚本（`Ctrl-C`、`SIGTERM`、`SIGHUP`），同样会执行这个回滚。若 `config.json` 已含 ISP 出口但服务没有在运行它，脚本会重启 sing-box 一次并再次检查；仍不健康就以非零状态退出，不会报告成功，也不会改动其他任何东西（`.env`、`clash.yaml` 和防火墙都不碰）。
-5. 写入 `.env` 和 `clash.yaml`，然后在本机防火墙放行三个端口：`ufw` 或 `firewalld`（都原生持久化），或 `iptables` 规则并通过 `netfilter-persistent` 保存（缺少时自动安装）。没有启用的防火墙就什么都不做。某个防火墙步骤失败时，服务此时已验证健康，所以**不会**回滚；脚本以非零状态退出，并在 stderr 打印提示（见下）。
-6. 提醒你在云厂商的安全组里放行同样的端口。这一步脚本无法代做。
+4. 替换 `config.json`，执行 `docker compose up -d --force-recreate`，确认容器在运行且新端口在监听。失败时恢复三个文件并重新创建容器。如果在 `config.json` 已被替换、服务尚未验证通过之前中断脚本（`Ctrl-C`、`SIGTERM`、`SIGHUP`），同样会执行这个回滚。若 `config.json` 已含 ISP 出口但服务没有在运行它，脚本会重启 sing-box 一次并再次检查；仍不健康就以非零状态退出，不会报告成功，也不会改动其他任何东西（`.env` 和 `clash.yaml` 都不碰）。
+5. 写入 `.env` 和 `clash.yaml`，并打印下面的端口提示。
 
-用相同的值连续执行两次 `--add`，结果不变（也不会产生新备份）。`--add` 之后再 `--remove`，对于本项目生成格式的文件，`config.json`、`.env`、`clash.yaml` 逐字节恢复；`.env` 或 `clash.yaml` 末尾没有换行时也会原样恢复（脚本会留一条标记注释用来还原）。`config.json` 由 `jq` 重新序列化，你手工改过的格式会被规范化。`--remove` 还会删除 `.env` 中所有 `ISP_SOCKS_*` 键，包括你自己手写的，并关闭它开放的防火墙端口。
+用相同的值连续执行两次 `--add`，结果不变（也不会产生新备份）。`--add` 之后再 `--remove`，对于本项目生成格式的文件，`config.json`、`.env`、`clash.yaml` 逐字节恢复；`.env` 或 `clash.yaml` 末尾没有换行时也会原样恢复（脚本会留一条标记注释用来还原）。`config.json` 由 `jq` 重新序列化，你手工改过的格式会被规范化。`--remove` 还会删除 `.env` 中所有 `ISP_SOCKS_*` 键，包括你自己手写的。
 
-### 防火墙步骤失败时
+### 自己放行端口
 
-stderr 上的提示只列出失败的端口，每个都带端口和协议（`13839/tcp`、`13839/udp`、`18444/tcp`），并给出所用的后端（`ufw`、`firewalld` 或 `iptables`）及该后端的错误输出。随后给出三种后端的手动命令，端口和协议都是实际值，例如：
+`--add` 成功后脚本会打印下面的提示（它不会开放任何端口）：
 
 ```text
-ufw（规则本身已持久化，无需其他步骤）：
-  ufw allow 13839/udp comment my-singbox-isp
-firewalld（用 --permanent，再 --reload）：
-  firewall-cmd --permanent --add-port=13839/udp
-  firewall-cmd --reload
-iptables（重启后丢失，除非保存）：
-  iptables -I INPUT -p udp --dport 13839 -m comment --comment my-singbox-isp -j ACCEPT
-  netfilter-persistent save        # 或：iptables-save > /etc/iptables/rules.v4
-  （缺少时先安装 iptables-persistent：apt-get install -y iptables-persistent）
+ACTION REQUIRED: allow these ports yourself. This script does not open any port.
+  13839/tcp  (ss-isp-in, Shadowsocks)
+  13839/udp  (ss-isp-in, Shadowsocks)
+  18444/tcp  (vless-reality-isp-in, VLESS Reality)
+Allow them in BOTH places, otherwise the new ports are not reachable from outside:
+  1. the local firewall on this server, if you run one (ufw, firewalld or iptables);
+  2. your cloud provider's security group (or network ACL) for this server.
+Ports 8388 and 8443 are not affected.
 ```
 
-提示还会提醒你在云厂商的安全组里放行这些端口。端口放行后，重新执行 `sudo bash scripts/isp-outbound.sh --add` 完成剩余步骤。重新执行会再次询问地址、用户名和密码（密码留空表示沿用已保存的），并再次经代理做出口检查，所以重新执行时**代理必须可用**；代理不可用时，手动开好端口就行了。`--remove` 方向相反：提示列出未能关闭的端口，并给出对应的 `ufw delete allow`、`firewall-cmd --permanent --remove-port` 加 `--reload`、`iptables -D` 命令，并让你重新执行 `--remove`。
+之后是供参考的示例命令：
 
-关于防火墙改动的两点说明：
+```text
+ufw（规则本身已持久化）：  ufw allow 13839/tcp ; ufw allow 13839/udp ; ufw allow 18444/tcp
+firewalld：  firewall-cmd --permanent --add-port=13839/tcp（以及 13839/udp、18444/tcp）；firewall-cmd --reload
+iptables：   iptables -I INPUT -p tcp --dport 13839 -j ACCEPT（以及 udp 13839、tcp 18444）
+             然后：netfilter-persistent save   （或：iptables-save > /etc/iptables/rules.v4）
+             （缺少时先安装 iptables-persistent）
+```
 
-- `ufw` 和 `firewalld` 按端口删除规则，不按 `my-singbox-isp` 注释匹配。如果你在运行脚本之前自己放行过同一端口，`--remove` 会把那条规则一起删掉。
-- `netfilter-persistent save`（以及 `iptables-save`）保存的是当前**整个** iptables 规则集，不只是本脚本的规则，其中包括 Docker、fail2ban 等其他工具添加的规则。
+`--remove` 之后会打印对应的提示：这些端口不再使用，可以自己关闭（本机防火墙和云安全组两处），并附 `ufw delete allow`、`firewall-cmd --permanent --remove-port` 加 `--reload`、`iptables -D` 命令。每次成功的 `--add` 和 `--remove` 都会打印提示（没有任何变化时也会），失败或回滚之后不会打印。
+
+关于这些示例命令的两点说明：
+
+- 按端口关闭 `ufw` 或 `firewalld` 规则时，也会删掉你自己为同一端口放行的规则。
+- `netfilter-persistent save`（以及 `iptables-save`）保存的是当前**整个** iptables 规则集，不只是这几条规则，其中包括 Docker、fail2ban 等其他工具添加的规则。
 
 说明：
 
-- `.env` 增加四个可选键：`ISP_SOCKS_ADDR`、`ISP_SOCKS_USER`、`ISP_SOCKS_PASS`、`ISP_SOCKS_EGRESS_IP`。用户名和密码以 `b64:<base64>` 存储，因为 Docker Compose 也会读取 `.env`，否则 `$` 等字符会被误解析。密码不会被打印，也不会出现在命令行。
-- `clash.yaml` 新增两个节点 `shadowsocks-isp`、`vless-reality-isp`，以及包含它们的 `select` 组 `Proxy-ISP`，位于 `# BEGIN my-singbox-isp` 和 `# END my-singbox-isp` 标记之间。`Proxy` 组和所有规则不变，不在客户端选择 `Proxy-ISP` 就不会有流量走它。**之后请在客户端重新导入 `clash.yaml`。**
-- 脚本只按当前名称 `shadowsocks`、`vless-reality` 查找源节点。如果 `clash.yaml` 是改名之前生成的，会提示并停止；删除 `clash.yaml` 后重新运行 `scripts/conf-clash.sh`。
+- `.env` 增加四个可选键：`ISP_SOCKS_ADDR`、`ISP_SOCKS_USER`、`ISP_SOCKS_PASS`、`ISP_SOCKS_EGRESS_IP`。和 `.env` 里的其他值一样以明文存储，`.env` 权限保持 `600`。用户名和密码用双引号包住，里面的反斜杠写成 `\\`，双引号写成 `\"`，美元符号写成 `$$`，这样任何值都只占一行，Docker Compose（它也会读取 `.env`）不会对它做变量替换，也不会解析失败。手写的不带引号的值按原样读取。密码不会被打印、写入日志或出现在命令行。
+- `clash.yaml` 新增两个节点 `shadowsocks-isp`、`vless-reality-isp`，追加到 `proxies` 列表末尾，并把这两个名字加到已有 `Proxy` 组的末尾，不创建新的组。新增内容位于 `# BEGIN my-singbox-isp` 和 `# END my-singbox-isp` 标记之间，`--remove` 恰好删掉这些行。所有规则不变，不在客户端里选择 ISP 节点就不会有流量走它们。**之后请在客户端重新导入 `clash.yaml`。** `templates/clash.yaml.template` 不会被修改。
+- 脚本只按当前名称 `shadowsocks`、`vless-reality` 查找源节点，并按名称和 `proxies:` 列表查找 `Proxy` 组。如果 `clash.yaml` 是改名之前生成的，或结构已不是这样，会提示并停止；删除 `clash.yaml` 后重新运行 `scripts/conf-clash.sh`。
 - 只测试经代理的 TCP。`13839` 上的 Shadowsocks UDP 仅在 SOCKS5 代理支持 UDP ASSOCIATE 时可用。
 - 同一时间只能运行一次（锁文件 `.isp.lock`）。运行时文件 `.isp-backup/`、`.isp.lock`、`.isp-tmp.*` 已写入 `.gitignore`。`.isp-tmp.*` 可能含密码；脚本结束时会删除它们，被强杀的运行留下的残留会在下次运行开始时清掉。
 

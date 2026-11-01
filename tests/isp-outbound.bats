@@ -21,9 +21,82 @@ assert_original_files() {
 
 up_count() { grep -c 'docker compose.* up ' "$STUB_LOG" || true; }
 
+# env_value KEY: the raw text stored after "KEY=" in .env.
 env_value() { grep -m1 "^$1=" "$PROJECT/.env" | cut -d= -f2-; }
 
-# No temp file (they can hold the plaintext or b64 password) may be left behind.
+# env_expect_quoted TEXT: the form the script must store a username/password
+# in, computed independently of the script: wrapped in double quotes, with
+# \ -> \\, " -> \" and $ -> $$ (the dotenv form Docker Compose reads).
+env_expect_quoted() {
+    local v=$1
+    v=${v//\\/\\\\}
+    v=${v//\"/\\\"}
+    v=${v//\$/\$\$}
+    printf '"%s"' "$v"
+}
+
+# read_back_pass FILE: load the script's own .env reader and set READ_BACK to
+# the password it reads from FILE (and check the user and address too).
+read_back_pass() {
+    local f
+    for f in env_get env_unquote env_get_plain is_ipv4 is_ipv6 parse_addr load_isp_from_env; do
+        # shellcheck disable=SC1090
+        source <(sed -n "/^${f}() {/,/^}/p" "$ISP")
+    done
+    load_isp_from_env "$1"
+    READ_BACK=$ISP_PASS
+}
+
+# compose_sees_pass TEXT: Docker Compose, which also parses .env, must read
+# exactly TEXT for ISP_SOCKS_PASS without an error or a warning. Skipped when
+# no usable compose is installed (the stub docker is taken off the PATH first).
+# A tiny compose file that interpolates the variable is used, so nothing but
+# that one value is ever printed.
+compose_sees_pass() {
+    local want=$1 clean_path out err dir="$BATS_TEST_TMPDIR/compose-check" cmd=()
+    clean_path=${PATH//"$STUB_DIR:"/}
+    if PATH=$clean_path docker compose version >/dev/null 2>&1; then
+        cmd=(docker compose)
+    elif PATH=$clean_path command -v docker-compose >/dev/null 2>&1; then
+        cmd=(docker-compose)
+    else
+        return 0
+    fi
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cp "$PROJECT/.env" "$dir/.env"
+    printf 'services:\n  t:\n    image: scratch\n    environment:\n      P: "${ISP_SOCKS_PASS}"\n' > "$dir/compose.yaml"
+    if ! out=$(cd "$dir" && PATH=$clean_path "${cmd[@]}" config --format json 2>"$dir/err"); then
+        echo "docker compose cannot parse .env: $(cat "$dir/err")" >&2
+        return 1
+    fi
+    err=$(cat "$dir/err")
+    [ -z "$err" ] || { echo "docker compose warned about .env: $err" >&2; return 1; }
+    # "config" prints every "$" of a value as "$$"
+    local want_out=${want//\$/\$\$}
+    [ "$(jq -r '.services.t.environment.P' <<< "$out")" = "$want_out" ] || { echo "docker compose reads a different password: want [$want]" >&2; return 1; }
+    rm -rf "$dir"
+}
+
+# The commands isp-outbound.sh must never run (it installs nothing, never uses
+# sudo and never touches a firewall).
+assert_no_system_changes() {
+    if grep -Eq '^(apt-get|sudo|ufw|firewall-cmd|iptables|ip6tables|netfilter-persistent|debconf-set-selections)( |$)' "$STUB_LOG"; then
+        echo "a forbidden command was run:" >&2
+        grep -E '^(apt-get|sudo|ufw|firewall-cmd|iptables|ip6tables|netfilter-persistent|debconf-set-selections)( |$)' "$STUB_LOG" >&2
+        return 1
+    fi
+}
+
+# Nothing was created or changed: the three files, no lock, no backup, no temp file.
+assert_nothing_written() {
+    assert_original_files
+    assert_no_tmp
+    [ ! -e "$PROJECT/.isp-backup" ]
+    [ ! -e "$PROJECT/.isp.lock" ]
+}
+
+# No temp file (they can hold the plaintext password) may be left behind.
 assert_no_tmp() {
     local left
     left=$(find "$PROJECT" -maxdepth 1 -name '.isp-tmp.*')
@@ -43,9 +116,9 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     grep -qxF '.isp-tmp.*' "$REPO_ROOT/.gitignore"
 }
 
-@test "--help prints usage and needs no root" {
-    isp_set uid 1000
-    isp_run --help
+@test "--help prints usage and needs neither root nor jq nor docker" {
+    make_min_path
+    PATH="$MINBIN" run bash "$ISP" --help
     [ "$status" -eq 0 ]
     [[ "$output" == *"--add"* ]]
     [[ "$output" == *"--remove"* ]]
@@ -59,17 +132,14 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     assert_original_files
 }
 
-@test "not root: dies before touching anything (add and remove)" {
-    isp_set uid 1000
+@test "no root or sudo is needed: the script never checks the uid and never calls sudo" {
+    refute grep -Eq 'EUID|id -u|\$\(id\)' "$ISP"
     isp_add_fresh
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"root"* ]]
+    [ "$status" -eq 0 ]
     isp_remove
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"root"* ]]
+    [ "$status" -eq 0 ]
     assert_original_files
-    refute grep -q '^docker' "$STUB_LOG"
-    refute test -d "$PROJECT/.isp-backup"
+    assert_no_system_changes
 }
 
 @test "menu: q quits, junk is rejected" {
@@ -131,14 +201,14 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     [ "$(stat -c %a "$c")" = 600 ]
 }
 
-@test "add: .env gets the four keys, credentials as b64:" {
+@test "add: .env gets the four keys as plain text (no b64), mode 600" {
     isp_add_fresh
     [ "$status" -eq 0 ]
-    [ "$(env_value ISP_SOCKS_ADDR)" = "$ISP_ADDR_FIXTURE" ]
-    [ "$(env_value ISP_SOCKS_USER)" = "b64:$(printf %s "$ISP_USER_FIXTURE" | base64)" ]
-    [ "$(env_value ISP_SOCKS_PASS)" = "b64:$(printf %s "$ISP_PASS_FIXTURE" | base64)" ]
-    grep -q '^ISP_SOCKS_EGRESS_IP=$' "$PROJECT/.env"
-    refute grep -qF "$ISP_PASS_FIXTURE" "$PROJECT/.env"
+    grep -qxF 'ISP_SOCKS_ADDR=198.51.100.7:1080' "$PROJECT/.env"
+    grep -qxF 'ISP_SOCKS_USER="isp-user"' "$PROJECT/.env"
+    grep -qxF 'ISP_SOCKS_PASS="S3cret-pass"' "$PROJECT/.env"
+    grep -qx 'ISP_SOCKS_EGRESS_IP=' "$PROJECT/.env"
+    refute grep -qiE 'b64|base64' "$PROJECT/.env"
     # The original lines are all still there, in order, at the top.
     head -n "$(wc -l < "$BATS_TEST_TMPDIR/orig.env")" "$PROJECT/.env" | cmp - "$BATS_TEST_TMPDIR/orig.env"
     [ "$(stat -c %a "$PROJECT/.env")" = 600 ]
@@ -151,6 +221,26 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     [ "$status" -eq 0 ]
     cmp config.json "$BATS_TEST_TMPDIR/orig.json"
     cmp clash.yaml "$BATS_TEST_TMPDIR/orig.yaml"
+    refute grep -qF "$ISP_PASS_FIXTURE" config.json clash.yaml
+}
+
+@test "add: config.json is written from the values stored in .env" {
+    isp_add_fresh "$ISP_ADDR_FIXTURE" "$ISP_USER_FIXTURE" 'Str@nge "pw" $x \'
+    [ "$status" -eq 0 ]
+    grep -qxF "ISP_SOCKS_PASS=$(env_expect_quoted 'Str@nge "pw" $x \')" "$PROJECT/.env"
+    [ "$(jq -r '.outbounds[1].password' "$PROJECT/config.json")" = 'Str@nge "pw" $x \' ]
+    # A hand-edited, unquoted plain-text value in .env is read the same way.
+    sed -i 's/^ISP_SOCKS_PASS=.*/ISP_SOCKS_PASS=hand-written pw/; s/^ISP_SOCKS_USER=.*/ISP_SOCKS_USER=hand-user/' "$PROJECT/.env"
+    isp_add_keep
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.outbounds[1].password' "$PROJECT/config.json")" = 'hand-written pw' ]
+    [ "$(jq -r '.outbounds[1].username' "$PROJECT/config.json")" = 'hand-user' ]
+    grep -qxF 'ISP_SOCKS_PASS="hand-written pw"' "$PROJECT/.env"
+}
+
+@test "no base64 anywhere: the ISP script, gen-config.sh, conf-clash.sh and the .env template do not mention it" {
+    refute grep -niE 'b64|base64' "$REPO_ROOT/scripts/isp-outbound.sh" "$REPO_ROOT/scripts/gen-config.sh" \
+        "$REPO_ROOT/scripts/conf-clash.sh" "$REPO_ROOT/templates/.env.template"
 }
 
 @test "add: validates with the container's own image, restarts once, verifies" {
@@ -213,15 +303,11 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     cmp "$first/.env" "$BATS_TEST_TMPDIR/orig.env"
 }
 
-@test "add: output carries the UDP caveat, the no-fallback note and the cloud security group reminder" {
+@test "add: output carries the UDP caveat and the no-fallback note" {
     isp_add_fresh
     [ "$status" -eq 0 ]
     [[ "$output" == *"UDP"* ]]
     [[ "$output" == *"fall back"* ]]
-    [[ "$output" == *"security group"* ]]
-    [[ "$output" == *"13839/tcp"* ]]
-    [[ "$output" == *"13839/udp"* ]]
-    [[ "$output" == *"18444/tcp"* ]]
     refute grep -qF "$ISP_PASS_FIXTURE" <<< "$output"
 }
 
@@ -274,25 +360,84 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     [ "$block" = "$expected" ]
 }
 
-@test "clash: Proxy-ISP is a select group of the two ISP nodes; Proxy and the rules are untouched" {
+@test "clash: both ISP nodes are added to the existing Proxy group; no new group; the rest is untouched" {
     isp_add_fresh
     [ "$status" -eq 0 ]
-    local y="$PROJECT/clash.yaml"
-    grep -q '^  - name: Proxy-ISP$' "$y"
-    run awk '/^  - name: Proxy-ISP$/{p=1;print;next} p&&/^# END/{exit} p{print}' "$y"
-    [ "$output" = "$(printf '%s\n' '  - name: Proxy-ISP' '    type: select' '    proxies:' '      - shadowsocks-isp' '      - vless-reality-isp')" ]
-    # Proxy group lines identical to the original.
+    local y="$PROJECT/clash.yaml" o="$BATS_TEST_TMPDIR/orig.yaml"
+    # The Proxy group: the original lines, then a marker block with the two names.
     local g1 g2
-    g1=$(awk '/^  - name: Proxy$/{p=1;print;next} p&&/^  - name:|^# /{exit} p{print}' "$BATS_TEST_TMPDIR/orig.yaml")
-    g2=$(awk '/^  - name: Proxy$/{p=1;print;next} p&&/^  - name:|^# /{exit} p{print}' "$y")
-    [ -n "$g1" ]
-    [ "$g1" = "$g2" ]
-    refute grep -q 'ISP' <<< "$g2"
-    # No rule or dns line points at the ISP group.
-    refute grep -Eq '^  - [A-Z-]+,.*Proxy-ISP|#Proxy-ISP' "$y"
+    g1=$(awk '/^  - name: Proxy$/{p=1;print;next} p&&/^$/{exit} p{print}' "$o")
+    g2=$(awk '/^  - name: Proxy$/{p=1;print;next} p&&/^$/{exit} p{print}' "$y")
+    [ "$g2" = "$(printf '%s\n%s\n%s\n%s\n%s' "$g1" '# BEGIN my-singbox-isp' '      - shadowsocks-isp' '      - vless-reality-isp' '# END my-singbox-isp')" ]
+    [ "$(grep -c '^  - name: ' "$y")" -eq "$(( $(grep -c '^  - name: ' "$o") + 2 ))" ]
+    # Exactly one Proxy group and no other group was added or changed.
+    [ "$(grep -c '^  - name: Proxy$' "$y")" -eq 1 ]
+    [ "$(grep -c '^    type: select$' "$y")" -eq "$(grep -c '^    type: select$' "$o")" ]
+    # The ISP names are listed once in a group and once as a node.
+    [ "$(grep -cx '      - shadowsocks-isp' "$y")" -eq 1 ]
+    [ "$(grep -cx '      - vless-reality-isp' "$y")" -eq 1 ]
+    # Rules and everything else are exactly the original (checked by the marker strip above) and
+    # no rule points at an ISP node or group.
+    refute grep -Eq '^  - [A-Z-]+,.*-isp' "$y"
+    # The template is not touched.
+    cmp "$PROJECT/templates/clash.yaml.template" "$REPO_ROOT/templates/clash.yaml.template"
 }
 
-@test "clash: parses as YAML with the expected proxies and groups" {
+@test "clash: the Proxy group keeps its order, the ISP names follow its last entry" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    run awk '/^  - name: Proxy$/{p=1;next} p&&/^    proxies:$/{q=1;next} q&&/^  - name:|^[^ #]/{exit} q&&!/^#/{print}' "$PROJECT/clash.yaml"
+    [ "$output" = "$(printf '%s\n' '      - shadowsocks' '      - vless-reality' '      - DIRECT' '      - shadowsocks-isp' '      - vless-reality-isp')" ]
+}
+
+@test "clash: add is idempotent; re-running changes nothing and never duplicates the entries" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    cp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/clash.after-add"
+    local _
+    for _ in 1 2 3; do
+        isp_add_keep
+        [ "$status" -eq 0 ]
+        cmp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/clash.after-add"
+    done
+    # same values typed again, and changed credentials: still one entry each
+    isp_add_fresh "" "other-user" "other-pass"
+    [ "$status" -eq 0 ]
+    cmp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/clash.after-add"
+    [ "$(grep -c '^# BEGIN my-singbox-isp$' "$PROJECT/clash.yaml")" -eq 2 ]
+    [ "$(grep -cx '      - shadowsocks-isp' "$PROJECT/clash.yaml")" -eq 1 ]
+    [ "$(grep -cx '      - vless-reality-isp' "$PROJECT/clash.yaml")" -eq 1 ]
+}
+
+@test "clash: remove deletes the nodes and their Proxy entries and restores clash.yaml byte for byte" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    grep -q 'vless-reality-isp' "$PROJECT/clash.yaml"
+    isp_remove
+    [ "$status" -eq 0 ]
+    cmp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/orig.yaml"
+    refute grep -q -- '-isp\|my-singbox-isp' "$PROJECT/clash.yaml"
+    # and again after remove -> add -> remove
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    isp_remove
+    [ "$status" -eq 0 ]
+    cmp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/orig.yaml"
+}
+
+@test "clash: a Proxy group that is missing or has no proxies list is refused, nothing written" {
+    sed -i 's/^  - name: Proxy$/  - name: Main/' "$PROJECT/clash.yaml"
+    cp "$PROJECT/clash.yaml" "$BATS_TEST_TMPDIR/orig.yaml"
+    local before
+    before=$(isp_snapshot)
+    isp_add_fresh
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"'Proxy' proxy group"* ]]
+    [ "$(isp_snapshot)" = "$before" ]
+    [ "$(up_count)" -eq 0 ]
+}
+
+@test "clash: parses as YAML; the ISP nodes are in the Proxy group, nothing else changed" {
     python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
     isp_add_fresh
     [ "$status" -eq 0 ]
@@ -302,10 +447,10 @@ new = yaml.safe_load(open(sys.argv[1]))
 old = yaml.safe_load(open(sys.argv[2]))
 names = [p["name"] for p in new["proxies"]]
 assert names == ["shadowsocks", "vless-reality", "shadowsocks-isp", "vless-reality-isp"], names
-assert new["proxy-groups"][0] == old["proxy-groups"][0]
-isp = [g for g in new["proxy-groups"] if g["name"] == "Proxy-ISP"]
-assert len(isp) == 1 and isp[0]["type"] == "select"
-assert isp[0]["proxies"] == ["shadowsocks-isp", "vless-reality-isp"]
+assert len(new["proxy-groups"]) == len(old["proxy-groups"]) == 1
+g = new["proxy-groups"][0]
+assert g["name"] == "Proxy" and g["type"] == "select"
+assert g["proxies"] == old["proxy-groups"][0]["proxies"] + ["shadowsocks-isp", "vless-reality-isp"], g["proxies"]
 assert new["rules"] == old["rules"]
 assert new["dns"] == old["dns"]
 by = {p["name"]: p for p in new["proxies"]}
@@ -580,17 +725,6 @@ expect_add_failure() {
     [[ "$output" == *"config check failed"* ]]
 }
 
-@test "failure paths: jq missing and apt-get failing writes nothing" {
-    make_min_path
-    isp_switch fail_apt
-    local before
-    before=$(isp_snapshot)
-    PATH="$STUB_DIR:$MINBIN" isp_add_fresh
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"jq"* ]]
-    [ "$(isp_snapshot)" = "$before" ]
-}
-
 @test "failure paths: the ISP port is already taken by something else" {
     printf 'tcp 8388\nudp 8388\ntcp 8443\ntcp 13839\n' > "$STUB_STATE/listeners"
     local before
@@ -655,8 +789,7 @@ expect_add_failure() {
     [ "$(cat "$STUB_STATE/listeners")" = "$(printf 'tcp 8388\nudp 8388\ntcp 8443')" ]
     [ "$(up_count)" -eq 2 ]
     [ "$(isp_snapshot)" = "$before" ]
-    # no firewall change was made (config-first ordering)
-    refute grep -qE '^(ufw|firewall-cmd|iptables) ' <(grep -vE '^iptables -S|^ufw status|^firewall-cmd --state' "$STUB_LOG")
+    assert_no_system_changes
     # the backup of the failed attempt is kept for inspection
     [ -d "$PROJECT/.isp-backup" ]
 }
@@ -694,7 +827,7 @@ expect_add_failure() {
 
 # ---------------------------------------------------------------- special characters
 
-@test "special-character passwords round-trip into config.json and .env and never leak" {
+@test "special-character passwords round-trip through .env into config.json and never reach output or logs" {
     local -a pws=(
         'p@ss:w/rd#1'
         'a"b'\''c\d'
@@ -724,17 +857,26 @@ expect_add_failure() {
         # config.json holds the exact password
         [ "$(jq -r '.outbounds[1].password' "$PROJECT/config.json")" = "$pw" ]
         [ "$(jq -r '.outbounds[1].username' "$PROJECT/config.json")" = "$user" ]
-        # .env holds it base64-encoded, and decodes to the exact password
-        local stored
-        stored=$(env_value ISP_SOCKS_PASS)
-        [[ "$stored" == b64:* ]]
-        [ "$(printf %s "${stored#b64:}" | base64 -d)" = "$pw" ]
-        refute grep -qF -- "$pw" "$PROJECT/.env"
+        # .env holds it as plain text in the quoted one-line form...
+        grep -qxF -- "ISP_SOCKS_PASS=$(env_expect_quoted "$pw")" "$PROJECT/.env"
+        [ "$(grep -c '^ISP_SOCKS_PASS=' "$PROJECT/.env")" -eq 1 ]
+        [ "$(wc -l < "$PROJECT/.env")" -eq "$(( $(wc -l < "$BATS_TEST_TMPDIR/orig.env") + 6 ))" ]
+        [ "$(stat -c %a "$PROJECT/.env")" = 600 ]
+        # ...that the script reads back to the exact password
+        read_back_pass "$PROJECT/.env"
+        [ "$READ_BACK" = "$pw" ]
+        # ...and that gen-config.sh / conf-clash.sh accept without rendering it
+        ( cd "$PROJECT" && mkdir -p "$BATS_TEST_TMPDIR/chk" && cp -r scripts templates .env "$BATS_TEST_TMPDIR/chk/" \
+            && cd "$BATS_TEST_TMPDIR/chk" && bash scripts/gen-config.sh >/dev/null && bash scripts/conf-clash.sh >/dev/null \
+            && ! grep -qF -- "$pw" config.json clash.yaml )
+        rm -rf "$BATS_TEST_TMPDIR/chk"
+        # Docker Compose (which also parses .env) sees the exact value, with no warning or error
+        compose_sees_pass "$pw"
         # curl got a correctly quoted value on stdin
         local esc=${pw//\\/\\\\}
         esc=${esc//\"/\\\"}
         grep -qF -- "proxy-user = \"$user:$esc\"" "$STUB_STATE/last-curl-config"
-        # never in the output, in any command line (stub log), or in clash.yaml
+        # never in the output, in any command line (stub log), or in clash.yaml (it is only in .env)
         if grep -qF -- "$pw" <<< "$output"; then echo "password #$n leaked into the output" >&2; return 1; fi
         if grep -qF -- "$pw" "$STUB_LOG"; then echo "password #$n leaked into a command line" >&2; return 1; fi
         if grep -qF -- "$pw" "$PROJECT/clash.yaml"; then echo "password #$n leaked into clash.yaml" >&2; return 1; fi
@@ -747,7 +889,7 @@ expect_add_failure() {
     done
 }
 
-@test "special-character: a re-run keeps the stored b64 credentials without prompting for them" {
+@test "special-character: a re-run keeps the stored credentials without prompting for them" {
     isp_add_fresh "$ISP_ADDR_FIXTURE" "$ISP_USER_FIXTURE" 'p@ss:w/rd#1 "q" \'
     [ "$status" -eq 0 ]
     local s1
@@ -776,13 +918,13 @@ expect_add_failure() {
     refute grep -qF 'Un1queSecretValue!' "$STUB_LOG"
 }
 
-# ---------------------------------------------------------------- jq
+# ---------------------------------------------------------------- preflight errors
 
 make_min_path() {
     MINBIN="$BATS_TEST_TMPDIR/minbin"
     mkdir -p "$MINBIN"
     local t p
-    for t in bash env flock base64 mktemp cmp date tr grep find sort rm mv cp chmod chown mkdir \
+    for t in bash env flock mktemp cmp date tr grep find sort rm mv cp chmod chown mkdir \
              basename dirname cat head tail sed awk wc cut stat ls tee readlink realpath uniq \
              touch ln diff sha256sum xargs printf true false test dd od hostname uname iconv; do
         p=$(command -v "$t" 2>/dev/null || true)
@@ -791,329 +933,214 @@ make_min_path() {
     true
 }
 
-@test "jq is installed through apt-get when missing" {
+@test "jq missing: fails early with a clear error, installs nothing, writes nothing (add, remove, menu)" {
     make_min_path
     [ ! -e "$STUB_DIR/jq" ]
-    PATH="$STUB_DIR:$MINBIN" isp_add_fresh
-    [ "$status" -eq 0 ]
-    grep -q '^apt-get .*install.* jq' "$STUB_LOG"
-    grep -q isp-socks "$PROJECT/config.json"
-}
-
-@test "jq present: apt-get is not called" {
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    refute grep -q '^apt-get' "$STUB_LOG"
-}
-
-# ---------------------------------------------------------------- firewall
-
-@test "firewall none: no firewall commands, reminder still printed" {
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    refute grep -qE '^(ufw (allow|delete)|firewall-cmd .*(add|remove)-port|iptables -I|netfilter-persistent)' "$STUB_LOG"
-    [[ "$output" == *"security group"* ]]
-}
-
-@test "firewall ufw: allows the three rules and removes them again" {
-    isp_set backend ufw
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    grep -q '^ufw allow 13839/tcp' "$STUB_LOG"
-    grep -q '^ufw allow 13839/udp' "$STUB_LOG"
-    grep -q '^ufw allow 18444/tcp' "$STUB_LOG"
-    refute grep -qE '^ufw allow (8388|8443)' "$STUB_LOG"
-    isp_remove
-    [ "$status" -eq 0 ]
-    grep -q '^ufw delete allow 13839/tcp' "$STUB_LOG"
-    grep -q '^ufw delete allow 13839/udp' "$STUB_LOG"
-    grep -q '^ufw delete allow 18444/tcp' "$STUB_LOG"
-    assert_original_files
-}
-
-@test "firewall ufw: rules are only added after the new service is verified" {
-    isp_set backend ufw
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    local up_line fw_line
-    up_line=$(grep -n ' up -d' "$STUB_LOG" | head -1 | cut -d: -f1)
-    fw_line=$(grep -n '^ufw allow' "$STUB_LOG" | head -1 | cut -d: -f1)
-    [ "$up_line" -lt "$fw_line" ]
-}
-
-@test "firewall firewalld: opens permanent and runtime ports, removes both" {
-    isp_set backend firewalld
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    local p
-    for p in 13839/tcp 13839/udp 18444/tcp; do
-        grep -qxF "perm:$p" "$STUB_STATE/firewalld_ports"
-        grep -qxF "run:$p" "$STUB_STATE/firewalld_ports"
-    done
-    isp_add_keep
-    [ "$status" -eq 0 ]
-    [ "$(grep -c '^perm:13839/tcp$' "$STUB_STATE/firewalld_ports")" -eq 1 ]
-    isp_remove
-    [ "$status" -eq 0 ]
-    [ ! -s "$STUB_STATE/firewalld_ports" ]
-    assert_original_files
-}
-
-@test "firewall iptables: inserts tagged rules once, installs and calls netfilter-persistent" {
-    isp_set backend iptables
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    [ "$(wc -l < "$STUB_STATE/ipt_rules")" -eq 3 ]
-    grep -q -- '--dport 13839 .*my-singbox-isp' "$STUB_STATE/ipt_rules"
-    grep -q 'apt-get .*install.*netfilter-persistent' "$STUB_LOG"
-    grep -q '^debconf-set-selections' "$STUB_LOG"
-    grep -q '^netfilter-persistent save' "$STUB_LOG"
-    # Idempotent: a second run adds nothing.
-    isp_add_keep
-    [ "$status" -eq 0 ]
-    [ "$(wc -l < "$STUB_STATE/ipt_rules")" -eq 3 ]
-    # Remove deletes them and saves again.
-    : > "$STUB_LOG"
-    isp_remove
-    [ "$status" -eq 0 ]
-    [ ! -s "$STUB_STATE/ipt_rules" ]
-    grep -q '^netfilter-persistent save' "$STUB_LOG"
-    assert_original_files
-}
-
-@test "firewall iptables: netfilter-persistent already present is not reinstalled" {
-    isp_set backend iptables
-    printf '#!/usr/bin/env bash\necho "netfilter-persistent $*" >> "$STUB_LOG"\n' > "$STUB_DIR/netfilter-persistent"
-    chmod +x "$STUB_DIR/netfilter-persistent"
-    isp_add_fresh
-    [ "$status" -eq 0 ]
-    refute grep -q '^apt-get .*install.*netfilter-persistent' "$STUB_LOG"
-    grep -q '^netfilter-persistent save' "$STUB_LOG"
-}
-
-@test "remove cleans up firewall rules even when the config is already clean" {
-    isp_set backend ufw
-    isp_remove
-    [ "$status" -eq 0 ]
-    grep -q '^ufw delete allow 13839/tcp' "$STUB_LOG"
-    assert_original_files
-}
-
-# ---------------------------------------------------------------- firewall failure hint
-
-# fw_err: the hint, printed on stderr.
-fw_err() { cat "$ISP_ERR"; }
-
-# assert_fw_hint MODE BACKEND ERRTEXT RULE...: the stderr hint names exactly the
-# given failed rules (port/proto) and has every other required element.
-assert_fw_hint() {
-    local mode=$1 backend=$2 errtext=$3
-    shift 3
-    local err rule port proto other
-    err=$(fw_err)
-    # 1. exactly the failed ports, with protocol
-    for rule in "$@"; do
-        [[ "$err" == *"  - $rule"* ]] || { echo "missing failed rule $rule" >&2; return 1; }
-    done
-    for other in 13839/tcp 13839/udp 18444/tcp; do
-        case " $* " in
-            *" $other "*) ;;
-            *) [[ "$err" != *"$other"* ]] || { echo "lists $other, which did not fail" >&2; return 1; } ;;
-        esac
-    done
-    # 2. the reason: the backend and its error output
-    [[ "$err" == *"backend: $backend"* ]]
-    [[ "$err" == *"$errtext"* ]]
-    # service verified healthy and kept
-    [[ "$err" == *"NOT rolled back"* ]]
-    [[ "$err" == *"non-zero"* ]]
-    # 3. manual commands for all three backends, with the real ports and protos
-    [[ "$err" == *"ufw"*"firewalld"*"iptables"* ]]
-    [[ "$err" == *"firewall-cmd --reload"* ]]
-    [[ "$err" == *"--permanent"* ]]
-    [[ "$err" == *"persistent already"* ]]
-    [[ "$err" == *"netfilter-persistent save"* ]]
-    [[ "$err" == *"iptables-save > /etc/iptables/rules.v4"* ]]
-    [[ "$err" == *"apt-get install -y iptables-persistent"* ]]
-    for rule in "$@"; do
-        port=${rule%%/*}
-        proto=${rule##*/}
-        if [ "$mode" = add ]; then
-            [[ "$err" == *"ufw allow $rule comment my-singbox-isp"* ]]
-            [[ "$err" == *"firewall-cmd --permanent --add-port=$rule"* ]]
-            [[ "$err" == *"iptables -I INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"* ]]
-        else
-            [[ "$err" == *"ufw delete allow $rule"* ]]
-            [[ "$err" == *"firewall-cmd --permanent --remove-port=$rule"* ]]
-            [[ "$err" == *"iptables -D INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"* ]]
-        fi
-    done
-    [[ "$err" == *"security group"* ]]
-    if [ "$mode" = add ]; then
-        # 4/5. cloud reminder, re-run --add, and what the re-run needs
-        [[ "$err" == *"allow"*"in your cloud provider's security group"* ]]
-        [[ "$err" == *"isp-outbound.sh --add"* ]]
-        [[ "$err" == *"remaining steps"* ]]
-        [[ "$err" == *"egress check"* ]]
-        [[ "$err" == *"proxy must be working"* ]]
-    else
-        [[ "$err" == *"isp-outbound.sh --remove"* ]]
-    fi
-    # the password never shows up, on stderr or stdout
-    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$err"
-    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$output"
-}
-
-# The service was healthy, was not rolled back and is still running the ISP config.
-assert_service_kept() {
-    grep -q isp-socks "$PROJECT/config.json"
-    grep -q '^ISP_SOCKS_ADDR=' "$PROJECT/.env"
-    [ "$(up_count)" -eq 1 ]
-    refute grep -q 'Rolling back' "$ISP_ERR"
-    grep -qx 'tcp 13839' "$STUB_STATE/listeners"
-    [ "$(cat "$STUB_STATE/status")" = running ]
-}
-
-@test "firewall failure (add): ufw -> hint with all three ports, ufw as the backend, service kept, exit non-zero" {
-    ISP_SPLIT=1
-    isp_set backend ufw
-    isp_set fail_fw ufw
-    isp_add_fresh
+    export PATH="$STUB_DIR:$MINBIN"
+    ISP_SPLIT=1 isp_add_fresh
     [ "$status" -eq 1 ]
-    assert_fw_hint add ufw "stub-ufw: ERROR: could not update rules for 13839/tcp" 13839/tcp 13839/udp 18444/tcp
-    assert_service_kept
-    [[ "$(fw_err)" == *"ufw allow 13839/udp comment my-singbox-isp"* ]]
-    [[ "$(fw_err)" == *"ss-isp-in"* ]]
-    [[ "$(fw_err)" == *"vless-reality-isp-in"* ]]
-    assert_no_tmp
-}
-
-@test "firewall failure (add): firewalld -> hint, firewalld as the backend, service kept, exit non-zero" {
-    ISP_SPLIT=1
-    isp_set backend firewalld
-    isp_set fail_fw firewall-cmd
-    isp_add_fresh
+    [[ "$(cat "$ISP_ERR")" == *"jq is not installed"* ]]
+    [[ "$(cat "$ISP_ERR")" == *"Run scripts/init.sh"* ]]
+    [[ "$(cat "$ISP_ERR")" == *"install jq"* ]]
+    isp_remove
     [ "$status" -eq 1 ]
-    assert_fw_hint add firewalld "stub-firewalld: Error: COMMAND_FAILED: could not change 13839/udp" 13839/tcp 13839/udp 18444/tcp
-    assert_service_kept
-    assert_no_tmp
-}
-
-@test "firewall failure (add): iptables -> hint, iptables as the backend, service kept, exit non-zero" {
-    ISP_SPLIT=1
-    isp_set backend iptables
-    isp_set fail_fw iptables
-    isp_add_fresh
+    [[ "$output" == *"jq is not installed"* ]]
+    isp_stdin 1
+    isp_run
     [ "$status" -eq 1 ]
-    assert_fw_hint add iptables "stub-iptables: iptables: Resource temporarily unavailable (18444/tcp)" 13839/tcp 13839/udp 18444/tcp
-    assert_service_kept
-    [ ! -s "$STUB_STATE/ipt_rules" ]
-    assert_no_tmp
+    [[ "$output" == *"jq is not installed"* ]]
+    assert_nothing_written
+    assert_no_system_changes
+    # it failed before even looking at docker
+    refute grep -q '^docker' "$STUB_LOG"
 }
 
-@test "firewall failure (add): only the ports that failed are listed (ufw, firewalld, iptables)" {
-    ISP_SPLIT=1
-    local backend cmd text
-    for backend in ufw firewalld iptables; do
-        reset_isp_env
-        cmd=$backend
-        [ "$backend" = firewalld ] && cmd=firewall-cmd
-        isp_set backend "$backend"
-        isp_set fail_fw "$cmd"
-        isp_set fail_fw_rule 13839/udp
-        isp_add_fresh
-        [ "$status" -eq 1 ]
-        case $backend in
-            ufw) text="stub-ufw: ERROR: could not update rules for 13839/udp" ;;
-            firewalld) text="stub-firewalld: Error: COMMAND_FAILED: could not change 13839/udp" ;;
-            iptables) text="stub-iptables: iptables: Resource temporarily unavailable (13839/udp)" ;;
-        esac
-        assert_fw_hint add "$backend" "$text" 13839/udp
-        assert_service_kept
-    done
-}
-
-@test "firewall failure (add): iptables rules saved fine but netfilter-persistent save fails -> hint about persistence" {
-    ISP_SPLIT=1
-    isp_set backend iptables
-    printf '#!/usr/bin/env bash\necho "netfilter-persistent $*" >> "$STUB_LOG"\necho "stub-persist: cannot write /etc/iptables/rules.v4" >&2\nexit 1\n' > "$STUB_DIR/netfilter-persistent"
-    chmod +x "$STUB_DIR/netfilter-persistent"
-    isp_add_fresh
+@test "docker permission denied: fails early on stderr with both remedies, writes nothing (add, remove, menu)" {
+    isp_switch docker_denied
+    ISP_SPLIT=1 isp_add_fresh
     [ "$status" -eq 1 ]
     local err
-    err=$(fw_err)
-    [[ "$err" == *"backend: iptables"* ]]
-    [[ "$err" == *"saving the rules failed"* ]]
-    [[ "$err" == *"stub-persist: cannot write /etc/iptables/rules.v4"* ]]
-    [[ "$err" == *"netfilter-persistent save"* ]]
-    [[ "$err" == *"iptables-save > /etc/iptables/rules.v4"* ]]
-    [[ "$err" == *"isp-outbound.sh --add"* ]]
-    [ "$(wc -l < "$STUB_STATE/ipt_rules")" -eq 3 ]
-    assert_service_kept
+    err=$(cat "$ISP_ERR")
+    [[ "$err" == *"permission denied while talking to the Docker daemon"* ]]
+    [[ "$err" == *"Nothing was changed"* ]]
+    [[ "$err" == *"run this script with sudo:  sudo bash scripts/isp-outbound.sh --add"* ]]
+    [[ "$err" == *'sudo usermod -aG docker "$USER"'* ]]
+    [[ "$err" == *"log out and back in"* ]]
+    [ -z "$output" ]
+    ISP_SPLIT=1 isp_remove
+    [ "$status" -eq 1 ]
+    [[ "$(cat "$ISP_ERR")" == *"sudo bash scripts/isp-outbound.sh --remove"* ]]
+    isp_stdin 1
+    isp_run
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"permission denied while talking to the Docker daemon"* ]]
+    [[ "$output" != *"Choose"* ]]
+    assert_nothing_written
+    assert_no_system_changes
+    [ "$(up_count)" -eq 0 ]
+    refute grep -q '^docker run' "$STUB_LOG"
 }
 
-@test "firewall failure (add): after the ports are opened by hand, re-running --add finishes the job with exit 0" {
-    ISP_SPLIT=1
-    isp_set backend ufw
-    isp_set fail_fw ufw
+@test "docker not running: fails early with its own message, writes nothing" {
+    isp_switch docker_down
     isp_add_fresh
     [ "$status" -eq 1 ]
-    rm "$STUB_STATE/fail_fw"
-    isp_add_keep
-    [ "$status" -eq 0 ]
-    grep -q '^ufw allow 18444/tcp' "$STUB_LOG"
-    refute grep -q 'firewall' "$ISP_ERR"
-    refute grep -q 'Warning' "$ISP_ERR"
+    [[ "$output" == *"Docker daemon is not running"* ]]
+    [[ "$output" != *"permission denied"* ]]
+    assert_nothing_written
 }
 
-@test "firewall failure (add): the password is in neither stderr, the stub log nor its base64 form" {
-    ISP_SPLIT=1
-    isp_set backend ufw
-    isp_set fail_fw ufw
+@test "project directory not writable: fails early with a clear error, writes nothing" {
+    if [ "$EUID" -eq 0 ]; then
+        skip "root ignores directory permissions"
+    fi
+    chmod a-w "$PROJECT"
     isp_add_fresh
+    chmod u+w "$PROJECT"
     [ "$status" -eq 1 ]
-    refute grep -qF "$ISP_PASS_FIXTURE" "$ISP_ERR"
-    refute grep -qF "$ISP_PASS_FIXTURE" "$STUB_LOG"
-    refute grep -qF "$(printf %s "$ISP_PASS_FIXTURE" | base64)" "$ISP_ERR"
+    [[ "$output" == *"No permission to write in"* ]]
+    [[ "$output" == *"Nothing was changed"* ]]
+    assert_nothing_written
+    [ "$(up_count)" -eq 0 ]
 }
 
-@test "firewall failure (remove): ufw, firewalld and iptables -> close commands, --remove re-run, exit non-zero" {
-    ISP_SPLIT=1
-    local backend cmd text
-    for backend in ufw firewalld iptables; do
-        reset_isp_env
-        cmd=$backend
-        [ "$backend" = firewalld ] && cmd=firewall-cmd
-        isp_set backend "$backend"
-        isp_add_fresh
-        [ "$status" -eq 0 ]
-        isp_set fail_fw "$cmd"
-        isp_remove
-        [ "$status" -eq 1 ]
-        case $backend in
-            ufw) text="stub-ufw: ERROR: could not update rules for 13839/tcp" ;;
-            firewalld) text="stub-firewalld: Error: COMMAND_FAILED: could not change 13839/tcp" ;;
-            iptables) text="stub-iptables: iptables: Resource temporarily unavailable (13839/tcp)" ;;
-        esac
-        assert_fw_hint remove "$backend" "$text" 13839/tcp 13839/udp 18444/tcp
-        # The service is not rolled back: ISP is gone from config.json and stays gone.
-        refute grep -q isp-socks "$PROJECT/config.json"
-        refute grep -q 'Rolling back' "$ISP_ERR"
-        [ "$(cat "$STUB_STATE/status")" = running ]
-        assert_no_tmp
-    done
+@test "config.json not writable: fails early with a clear error, writes nothing" {
+    if [ "$EUID" -eq 0 ]; then
+        skip "root ignores file permissions"
+    fi
+    chmod a-w "$PROJECT/config.json"
+    cp "$PROJECT/config.json" "$BATS_TEST_TMPDIR/orig.json"
+    isp_add_fresh
+    chmod u+w "$PROJECT/config.json"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"No permission to read and write"* ]]
+    assert_nothing_written
 }
 
-@test "firewall failure (remove): only the ports that failed to close are listed" {
-    ISP_SPLIT=1
-    isp_set backend ufw
+# ---------------------------------------------------------------- port notices
+
+# The notices go to stdout; everything else (prompts, warnings) to stderr.
+assert_add_notice() {
+    local out=$1
+    [[ "$out" == *"ACTION REQUIRED: allow these ports yourself. This script does not open any port."* ]]
+    [[ "$out" == *"13839/tcp  (ss-isp-in, Shadowsocks)"* ]]
+    [[ "$out" == *"13839/udp  (ss-isp-in, Shadowsocks)"* ]]
+    [[ "$out" == *"18444/tcp  (vless-reality-isp-in, VLESS Reality)"* ]]
+    [[ "$out" == *"BOTH places"* ]]
+    [[ "$out" == *"the local firewall on this server"* ]]
+    [[ "$out" == *"cloud provider's security group"* ]]
+    [[ "$out" == *"Ports 8388 and 8443 are not affected"* ]]
+    # reference commands, per backend, with the real ports and protocols
+    [[ "$out" == *"ufw allow 13839/tcp"* ]]
+    [[ "$out" == *"ufw allow 13839/udp"* ]]
+    [[ "$out" == *"ufw allow 18444/tcp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --add-port=13839/tcp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --add-port=13839/udp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --add-port=18444/tcp"* ]]
+    [[ "$out" == *"firewall-cmd --reload"* ]]
+    [[ "$out" == *"iptables -I INPUT -p tcp --dport 13839 -j ACCEPT"* ]]
+    [[ "$out" == *"iptables -I INPUT -p udp --dport 13839 -j ACCEPT"* ]]
+    [[ "$out" == *"iptables -I INPUT -p tcp --dport 18444 -j ACCEPT"* ]]
+    [[ "$out" == *"netfilter-persistent save"* ]]
+    [[ "$out" == *"iptables-save > /etc/iptables/rules.v4"* ]]
+    [[ "$out" == *"whole current iptables ruleset"* ]]
+}
+
+assert_remove_notice() {
+    local out=$1
+    [[ "$out" == *"NOTE: the ISP ports are no longer used, so you can now close them yourself. This script does not close any port."* ]]
+    [[ "$out" == *"13839/tcp"* && "$out" == *"13839/udp"* && "$out" == *"18444/tcp"* ]]
+    [[ "$out" == *"BOTH places"* ]]
+    [[ "$out" == *"cloud provider's security group"* ]]
+    [[ "$out" == *"also removes a rule you added yourself for the same port"* ]]
+    [[ "$out" == *"ufw delete allow 13839/tcp"* ]]
+    [[ "$out" == *"ufw delete allow 13839/udp"* ]]
+    [[ "$out" == *"ufw delete allow 18444/tcp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --remove-port=13839/tcp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --remove-port=13839/udp"* ]]
+    [[ "$out" == *"firewall-cmd --permanent --remove-port=18444/tcp"* ]]
+    [[ "$out" == *"iptables -D INPUT -p tcp --dport 13839 -j ACCEPT"* ]]
+    [[ "$out" == *"iptables -D INPUT -p udp --dport 13839 -j ACCEPT"* ]]
+    [[ "$out" == *"iptables -D INPUT -p tcp --dport 18444 -j ACCEPT"* ]]
+    [[ "$out" == *"netfilter-persistent save"* ]]
+}
+
+@test "notice: a successful add prints the complete allow-the-ports notice on stdout" {
+    ISP_SPLIT=1 isp_add_fresh
+    [ "$status" -eq 0 ]
+    assert_add_notice "$output"
+    [[ "$(cat "$ISP_ERR")" != *"ACTION REQUIRED"* ]]
+    refute grep -qF "$ISP_PASS_FIXTURE" <<< "$output"
+    # it is the last thing printed, after the success line
+    [[ "$output" == *"ISP outbound is active"*"ACTION REQUIRED"* ]]
+    assert_no_system_changes
+}
+
+@test "notice: a no-change re-run of add prints it again" {
     isp_add_fresh
     [ "$status" -eq 0 ]
-    isp_set fail_fw ufw
-    isp_set fail_fw_rule 18444/tcp
+    ISP_SPLIT=1 isp_add_keep
+    [ "$status" -eq 0 ]
+    assert_add_notice "$output"
+}
+
+@test "notice: a successful remove prints the ports-can-be-closed note" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    ISP_SPLIT=1 isp_remove
+    [ "$status" -eq 0 ]
+    assert_remove_notice "$output"
+    [[ "$output" != *"ACTION REQUIRED"* ]]
+    assert_original_files
+    assert_no_system_changes
+}
+
+@test "notice: remove with nothing configured still prints the note" {
     isp_remove
-    [ "$status" -eq 1 ]
-    assert_fw_hint remove ufw "stub-ufw: ERROR: could not update rules for 18444/tcp" 18444/tcp
+    [ "$status" -eq 0 ]
+    assert_remove_notice "$output"
+}
+
+@test "notice: not printed when the add fails, is declined or is rolled back" {
+    isp_switch break_isp
+    isp_add_fresh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"ACTION REQUIRED"* ]]
+    reset_isp_env
+    isp_stdin "$ISP_ADDR_FIXTURE" "$ISP_USER_FIXTURE" "$ISP_PASS_FIXTURE" "$ISP_PASS_FIXTURE" "" n
+    isp_run --add
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"ACTION REQUIRED"* ]]
+    reset_isp_env
+    isp_switch fail_check
+    isp_add_fresh
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"ACTION REQUIRED"* ]]
+}
+
+@test "notice: not printed when a remove is rolled back" {
+    isp_add_fresh
+    [ "$status" -eq 0 ]
+    isp_switch break_clean
+    isp_remove
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"no longer used"* ]]
+}
+
+@test "no firewall is touched, nothing is installed and sudo is never called, in any flow" {
+    isp_add_fresh
+    assert_no_system_changes
+    isp_add_keep
+    assert_no_system_changes
+    isp_remove
+    assert_no_system_changes
+    isp_remove
+    assert_no_system_changes
+    isp_switch break_isp
+    isp_add_fresh
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Rolling back"* ]]
+    assert_no_system_changes
 }
 
 # ---------------------------------------------------------------- temp files
@@ -1156,7 +1183,7 @@ assert_service_kept() {
 }
 
 @test "temp files: leftovers from an older run are swept at the start of the next run" {
-    printf 'ISP_SOCKS_PASS=b64:old\n' > "$PROJECT/.isp-tmp.stale1"
+    printf 'ISP_SOCKS_PASS="old"\n' > "$PROJECT/.isp-tmp.stale1"
     printf 'plaintext\n' > "$PROJECT/.isp-tmp.stale2"
     isp_add_fresh
     [ "$status" -eq 0 ]
@@ -1177,8 +1204,7 @@ assert_service_kept() {
     grep -qx 'tcp 13839' "$STUB_STATE/listeners"
 }
 
-@test "add again with the ISP config present and the service still unhealthy after one restart: exit non-zero, nothing reported active, no firewall change" {
-    isp_set backend ufw
+@test "add again with the ISP config present and the service still unhealthy after one restart: exit non-zero, nothing reported active, no system change" {
     isp_add_fresh
     [ "$status" -eq 0 ]
     cp "$PROJECT/config.json" "$BATS_TEST_TMPDIR/cfg.after-add"
@@ -1191,7 +1217,7 @@ assert_service_kept() {
     [[ "$output" == *"still does not run the ISP outbound"* ]]
     [[ "$output" != *"ISP outbound is active"* ]]
     [ "$(up_count)" -eq 1 ]
-    refute grep -q '^ufw allow' "$STUB_LOG"
+    assert_no_system_changes
     assert_no_tmp
     [ "$(backup_count)" -eq 1 ]
     cmp "$PROJECT/config.json" "$BATS_TEST_TMPDIR/cfg.after-add"

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Optional: add or remove an ISP (static SOCKS5) egress for two extra ports.
 #
-#   sudo bash scripts/isp-outbound.sh            interactive menu
-#   sudo bash scripts/isp-outbound.sh --add      add or update the ISP outbound
-#   sudo bash scripts/isp-outbound.sh --remove   remove everything this script added
+#   bash scripts/isp-outbound.sh            interactive menu
+#   bash scripts/isp-outbound.sh --add      add or update the ISP outbound
+#   bash scripts/isp-outbound.sh --remove   remove everything this script added
 #   --yes / -y skips the restart confirmation.
+#
+# Needs jq (installed by scripts/init.sh) and permission to use Docker and to
+# write the project files: run as a user in the docker group, or with sudo.
+# It installs nothing and does not touch the firewall: after --add and
+# --remove it prints which ports you have to allow or may close yourself.
 #
 # Adds sing-box inbounds ss-isp-in (13839) and vless-reality-isp-in (18444),
 # cloned from ss-in and vless-reality-in, whose traffic leaves through the
@@ -32,8 +37,6 @@ VLESS_ISP_PORT=18444
 SS_ISP_TAG="ss-isp-in"
 VLESS_ISP_TAG="vless-reality-isp-in"
 OUT_TAG="isp-socks"
-FW_COMMENT="my-singbox-isp"
-FW_RULES=("${SS_ISP_PORT}/tcp" "${SS_ISP_PORT}/udp" "${VLESS_ISP_PORT}/tcp")
 MARK_BEGIN="# BEGIN my-singbox-isp"
 MARK_END="# END my-singbox-isp"
 ENV_HEADER="# ISP outbound (managed by scripts/isp-outbound.sh)"
@@ -45,7 +48,7 @@ MARK_NOEOL="# my-singbox-isp: original file had no trailing newline"
 ENV_KEY_RE='^(ISP_SOCKS_ADDR|ISP_SOCKS_USER|ISP_SOCKS_PASS|ISP_SOCKS_EGRESS_IP)='
 NODE_SS="shadowsocks"
 NODE_VLESS="vless-reality"
-GROUP_ISP="Proxy-ISP"
+GROUP_MAIN="Proxy"
 
 # Mutable state
 ASSUME_YES=0
@@ -57,11 +60,6 @@ MKTMP=""
 ROLLBACK_ARMED=0
 ENV_NOEOL=0
 CLASH_STRIP_NOEOL=0
-# Firewall bookkeeping, filled by fw_run and read by report_firewall_failures.
-FW_BACKEND="none"
-FW_FAIL_RULES=()      # "port/proto" entries whose open/close step failed
-FW_ERRORS=()          # "command (exit N): output" for every failed command
-FW_PERSIST_FAILED=0
 
 die() {
     echo "Error: $*" >&2
@@ -78,7 +76,7 @@ info() {
 
 usage() {
     cat <<'USAGE'
-Usage: sudo bash scripts/isp-outbound.sh [--add | --remove] [--yes]
+Usage: bash scripts/isp-outbound.sh [--add | --remove] [--yes]
 
   --add      add or update the ISP outbound (ports 13839 and 18444)
   --remove   remove the ISP outbound and everything this script added
@@ -134,21 +132,11 @@ compose() {
 # Checks and prompts
 # ---------------------------------------------------------------------------
 
-require_root() {
-    if [[ "$(id -u)" -ne 0 ]]; then
-        die "This script must run as root. Re-run with: sudo bash scripts/isp-outbound.sh"
+# require_jq: this script installs nothing; scripts/init.sh installs jq.
+require_jq() {
+    if ! command -v jq >/dev/null 2>&1; then
+        die "jq is not installed. Run scripts/init.sh (sudo bash scripts/init.sh) or install jq (sudo apt-get install -y jq), then re-run. Nothing was changed."
     fi
-}
-
-ensure_jq() {
-    if command -v jq >/dev/null 2>&1; then
-        return 0
-    fi
-    info "jq is not installed. Installing it with apt-get..."
-    command -v apt-get >/dev/null 2>&1 || die "jq is missing and apt-get is not available. Install jq and re-run."
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq || die "apt-get update failed."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq || die "Failed to install jq."
-    command -v jq >/dev/null 2>&1 || die "jq is still missing after installation."
 }
 
 require_commands() {
@@ -280,29 +268,84 @@ lacks_final_newline() {
 # .env helpers (values are read, never sourced)
 # ---------------------------------------------------------------------------
 
+# env_get KEY [FILE]: print the raw text after "KEY=" (first match), unparsed.
 env_get() {
-    local key=$1 line
-    [[ -f "$ENV_FILE" ]] || return 0
+    local key=$1 file=${2:-$ENV_FILE} line
+    [[ -f "$file" ]] || return 0
     while IFS= read -r line || [[ -n "$line" ]]; do
         line=${line%$'\r'}
         if [[ "$line" =~ ^${key}=(.*)$ ]]; then
             printf '%s' "${BASH_REMATCH[1]}"
             return 0
         fi
-    done < "$ENV_FILE"
+    done < "$file"
 }
 
-b64_encode() {
-    printf 'b64:%s' "$(printf '%s' "$1" | base64 -w0)"
+# Username and password are stored in .env as plain text inside double quotes,
+# in the dotenv form Docker Compose also reads: \ -> \\, " -> \", $ -> $$.
+# That keeps any value (quotes, backslashes, $, #, spaces, UTF-8) on one line
+# and stops Compose from interpolating it or failing to parse .env.
+env_quote() {
+    local v=$1 bs=$'\\' dq dl='$$'
+    dq=$bs'"'
+    bs=$bs$bs
+    v=${v//\\/"$bs"}
+    v=${v//\"/"$dq"}
+    v=${v//\$/"$dl"}
+    printf '"%s"' "$v"
 }
 
-# Decode "b64:..." to plain text. Prints nothing and fails on bad input.
-b64_decode() {
-    local value=$1
-    [[ "$value" == b64:* ]] || return 1
-    value=${value#b64:}
-    [[ "$value" =~ ^[A-Za-z0-9+/]*={0,2}$ ]] || return 1
-    printf '%s' "$value" | base64 -d 2>/dev/null
+# env_unquote RAW: undo env_quote. A value that is not wrapped in double
+# quotes is plain text and is returned as is. Fails on a malformed quoted value.
+env_unquote() {
+    local LC_ALL=C raw=$1 inner out="" c n i bs=$'\\'
+    if [[ ${#raw} -ge 2 && "$raw" == \"*\" ]]; then
+        inner=${raw:1:${#raw}-2}
+        n=${#inner}
+        for ((i = 0; i < n; i++)); do
+            c=${inner:i:1}
+            case "$c" in
+                "$bs")
+                    i=$((i + 1))
+                    c=${inner:i:1}
+                    [[ "$c" == "$bs" || "$c" == '"' ]] || return 1
+                    out+=$c
+                    ;;
+                '"')
+                    return 1
+                    ;;
+                '$')
+                    [[ "${inner:i+1:1}" == '$' ]] || return 1
+                    out+='$'
+                    i=$((i + 1))
+                    ;;
+                *)
+                    out+=$c
+                    ;;
+            esac
+        done
+        printf '%s' "$out"
+    else
+        printf '%s' "$raw"
+    fi
+}
+
+# env_get_plain KEY [FILE]: the stored value as plain text. Prints nothing and
+# fails when the value is malformed.
+env_get_plain() {
+    env_unquote "$(env_get "$@")"
+}
+
+# Read the four ISP_SOCKS_* values from an .env file, the same way the other
+# .env values are read, into ISP_ADDR/ISP_HOST/ISP_PORT, ISP_USER, ISP_PASS and
+# ISP_EGRESS_IP. Fails when one is missing or malformed.
+load_isp_from_env() {
+    local file=$1
+    parse_addr "$(env_get ISP_SOCKS_ADDR "$file")" || return 1
+    ISP_USER="$(env_get_plain ISP_SOCKS_USER "$file")" || return 1
+    ISP_PASS="$(env_get_plain ISP_SOCKS_PASS "$file")" || return 1
+    ISP_EGRESS_IP="$(env_get ISP_SOCKS_EGRESS_IP "$file")"
+    [[ -n "$ISP_USER" && -n "$ISP_PASS" ]]
 }
 
 # Print .env without the keys and header this script manages.
@@ -477,6 +520,42 @@ clash_find_node() {
     done
 }
 
+# clash_find_group_list ARRAY GROUP: set LIST_LAST to the index of the last item
+# of the "proxies:" list of the proxy group named GROUP (items are indented as
+# scripts/conf-clash.sh writes them: "      - NAME").
+clash_find_group_list() {
+    local -n _fg_arr=$1
+    local group=$2 i j count=0 gstart=-1 gend pstart=-1 pcount=0
+    LIST_LAST=-1
+    for ((i = 0; i < ${#_fg_arr[@]}; i++)); do
+        if [[ "${_fg_arr[i]}" =~ ^\ \ -\ name:\ \"?${group}\"?[[:space:]]*$ ]]; then
+            gstart=$i
+            count=$((count + 1))
+        fi
+    done
+    [[ "$count" -eq 1 ]] || return 1
+    gend=${#_fg_arr[@]}
+    for ((j = gstart + 1; j < ${#_fg_arr[@]}; j++)); do
+        if [[ "${_fg_arr[j]}" =~ ^\ \ -\  || "${_fg_arr[j]}" =~ ^[^[:space:]#] ]]; then
+            gend=$j
+            break
+        fi
+    done
+    for ((j = gstart + 1; j < gend; j++)); do
+        if [[ "${_fg_arr[j]}" =~ ^\ \ \ \ proxies:[[:space:]]*$ ]]; then
+            pstart=$j
+            pcount=$((pcount + 1))
+        fi
+    done
+    [[ "$pcount" -eq 1 ]] || return 1
+    j=$((pstart + 1))
+    while ((j < gend)) && [[ "${_fg_arr[j]}" =~ ^\ \ \ \ \ \ -\ [^[:space:]] ]]; do
+        LIST_LAST=$j
+        j=$((j + 1))
+    done
+    ((LIST_LAST > pstart))
+}
+
 # clash_clone_node ARRAY OLD_NAME NEW_NAME OLD_PORT NEW_PORT: print the node
 # block with only the name and port changed.
 clash_clone_node() {
@@ -502,11 +581,12 @@ clash_missing_nodes_hint() {
     die "clash.yaml has no usable node named \"$NODE_SS\" and \"$NODE_VLESS\". It was probably generated by an older version (My-sing-box / My-VLESS-Reality). Delete clash.yaml, run scripts/conf-clash.sh to regenerate it, re-import it in your clients, then re-run this script."
 }
 
-# clash_render_add OUTFILE: write clash.yaml with the ISP nodes and group.
+# clash_render_add OUTFILE: write clash.yaml with the ISP nodes, also listed in
+# the existing "Proxy" group (no new group).
 clash_render_add() {
     local out=$1
     local -a raw=() base=() nodes=() new=()
-    local proxies_i groups_i rules_i node_after group_after i j noeol=0
+    local proxies_i groups_i rules_i node_after list_after i j noeol=0
     mapfile -t raw < "$CLASH_FILE"
     clash_strip base raw || die "clash.yaml has unbalanced '$MARK_BEGIN' / '$MARK_END' markers. Fix or delete them and re-run."
     noeol=$CLASH_STRIP_NOEOL
@@ -519,7 +599,7 @@ clash_render_add() {
     rules_i="$(clash_find_top base rules)" || die "clash.yaml must contain exactly one top-level 'rules:'."
     ((proxies_i < groups_i && groups_i < rules_i)) || die "clash.yaml sections are not in the expected order (proxies, proxy-groups, rules)."
 
-    if printf '%s\n' "${base[@]}" | grep -Eq "${NODE_SS}-isp|${NODE_VLESS}-isp|${GROUP_ISP}"; then
+    if printf '%s\n' "${base[@]}" | grep -Eq "${NODE_SS}-isp|${NODE_VLESS}-isp"; then
         die "clash.yaml already uses ISP names outside the '$MARK_BEGIN' markers. Remove them and re-run."
     fi
 
@@ -527,15 +607,14 @@ clash_render_add() {
     ss_block="$(clash_clone_node base "$NODE_SS" "${NODE_SS}-isp" "$SS_PORT" "$SS_ISP_PORT")" || clash_missing_nodes_hint
     vl_block="$(clash_clone_node base "$NODE_VLESS" "${NODE_VLESS}-isp" "$VLESS_PORT" "$VLESS_ISP_PORT")" || clash_missing_nodes_hint
 
-    # The nodes go after the last non-blank line before proxy-groups:, the
-    # group after the last non-blank, non-comment line before rules:.
+    # The nodes go after the last non-blank line before proxy-groups:, the two
+    # names go at the end of the "Proxy" group's proxies list.
+    clash_find_group_list base "$GROUP_MAIN" || die "clash.yaml has no '$GROUP_MAIN' proxy group with a 'proxies:' list in the expected format (generated by scripts/conf-clash.sh). Regenerate clash.yaml, re-import it in your clients, then re-run this script."
+    list_after=$LIST_LAST
+    ((list_after > groups_i && list_after < rules_i)) || die "clash.yaml: the '$GROUP_MAIN' group is not inside 'proxy-groups:'."
     node_after=$((groups_i - 1))
     while ((node_after > proxies_i)) && [[ "${base[node_after]}" =~ ^[[:space:]]*$ ]]; do
         node_after=$((node_after - 1))
-    done
-    group_after=$((rules_i - 1))
-    while ((group_after > groups_i)) && [[ "${base[group_after]}" =~ ^[[:space:]]*$ || "${base[group_after]}" =~ ^# ]]; do
-        group_after=$((group_after - 1))
     done
 
     for ((i = 0; i < ${#base[@]}; i++)); do
@@ -548,11 +627,8 @@ clash_render_add() {
             new+=("${nodes[@]}")
             new+=("$MARK_END")
         fi
-        if ((i == group_after)); then
+        if ((i == list_after)); then
             new+=("$MARK_BEGIN"
-                  "  - name: ${GROUP_ISP}"
-                  "    type: select"
-                  "    proxies:"
                   "      - ${NODE_SS}-isp"
                   "      - ${NODE_VLESS}-isp"
                   "$MARK_END")
@@ -571,7 +647,7 @@ clash_render_add() {
     [[ "$(printf '%s\n' "${check_base[@]}")" == "$(printf '%s\n' "${base[@]}")" ]] || die "Internal error: clash.yaml edit changed lines outside the markers."
     [[ "$(grep -cF -- "${NODE_SS}-isp" "$out")" -eq 2 ]] || die "Internal error: unexpected ${NODE_SS}-isp count in clash.yaml."
     [[ "$(grep -cF -- "${NODE_VLESS}-isp" "$out")" -eq 2 ]] || die "Internal error: unexpected ${NODE_VLESS}-isp count in clash.yaml."
-    [[ "$(grep -cF -- "$GROUP_ISP" "$out")" -eq 1 ]] || die "Internal error: unexpected $GROUP_ISP count in clash.yaml."
+    [[ "$(grep -cxF -- "      - ${NODE_SS}-isp" "$out")" -eq 1 && "$(grep -cxF -- "      - ${NODE_VLESS}-isp" "$out")" -eq 1 ]] || die "Internal error: the ISP nodes must be listed once in the $GROUP_MAIN group."
     j="$(env_get REALITY_PRIVATE_KEY)"
     if [[ -n "$j" ]] && grep -qF -- "$j" "$out"; then
         die "Refusing to write REALITY_PRIVATE_KEY into clash.yaml."
@@ -757,10 +833,41 @@ rollback() {
 # Preflight
 # ---------------------------------------------------------------------------
 
+# docker_info_check: tell "no permission for the Docker socket" apart from
+# "daemon not running", before anything is written.
+docker_info_check() {
+    local out
+    if out="$(docker info 2>&1)"; then
+        return 0
+    fi
+    if [[ "$out" == *[Pp]ermission\ denied* || "$out" == *"access denied"* ]]; then
+        echo "Error: permission denied while talking to the Docker daemon (the Docker socket is not accessible to this user). Nothing was changed." >&2
+        echo "Do one of these, then re-run:" >&2
+        echo "  - run this script with sudo:  sudo bash scripts/isp-outbound.sh ${ACTION:+--$ACTION}" >&2
+        echo "  - or add your user to the docker group and log in again:  sudo usermod -aG docker \"\$USER\"   (then log out and back in)" >&2
+        exit 1
+    fi
+    die "Docker daemon is not running (or not reachable). Start it and re-run. Nothing was changed."
+}
+
+# preflight_access: the project files and directory must be writable by this
+# user, checked before anything is written.
+preflight_access() {
+    local f
+    if [[ ! -w "$PROJECT_DIR" ]]; then
+        die "No permission to write in $PROJECT_DIR. Run with sudo (sudo bash scripts/isp-outbound.sh ${ACTION:+--$ACTION}) or fix the directory's permissions. Nothing was changed."
+    fi
+    for f in "$CONFIG_FILE" "$ENV_FILE" "$CLASH_FILE"; do
+        if [[ -e "$f" && ( ! -w "$f" || ! -r "$f" ) ]]; then
+            die "No permission to read and write $f. Run with sudo (sudo bash scripts/isp-outbound.sh ${ACTION:+--$ACTION}) or fix the file's permissions. Nothing was changed."
+        fi
+    done
+}
+
 preflight_docker() {
-    require_commands docker flock base64 mktemp cmp date iconv tail head find
+    require_commands docker flock mktemp cmp date iconv tail head find
     docker compose version >/dev/null 2>&1 || die "docker compose is not available."
-    docker info >/dev/null 2>&1 || die "Docker daemon is not running."
+    docker_info_check
     IMAGE="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
     [[ -n "$IMAGE" ]] || die "Container $CONTAINER_NAME not found. Run scripts/start.sh first."
 }
@@ -833,268 +940,71 @@ socks_egress_ip() {
 }
 
 # ---------------------------------------------------------------------------
-# Firewall
+# Port notices (this script never touches the firewall)
 # ---------------------------------------------------------------------------
 
-# fw_run RULE COMMAND...: run one firewall command and keep its output. RULE
-# is the "port/proto" it is about, or "-" for a step that is not about one
-# port (saving the iptables rules). A failure is recorded for the hint printed
-# by report_firewall_failures; the caller carries on with the next step.
-fw_run() {
-    local rule=$1 out rc=0 known r
-    shift
-    out="$("$@" 2>&1)" || rc=$?
-    if ((rc == 0)); then
-        return 0
-    fi
-    # No secret goes through a firewall command, but never echo one anyway.
-    if [[ -n "${ISP_PASS:-}" ]]; then
-        out=${out//"$ISP_PASS"/***}
-    fi
-    out="$(printf '%s' "$out" | head -n 8 | cut -c1-300)"
-    warn "Firewall command failed (exit ${rc}): $*"
-    FW_ERRORS+=("$* (exit ${rc}): ${out:-no output}")
-    if [[ "$rule" == "-" ]]; then
-        FW_PERSIST_FAILED=1
-    else
-        known=0
-        for r in "${FW_FAIL_RULES[@]+"${FW_FAIL_RULES[@]}"}"; do
-            [[ "$r" == "$rule" ]] && known=1
-        done
-        ((known)) || FW_FAIL_RULES+=("$rule")
-    fi
-    return 1
-}
-
-ipt_active() {
-    local cmd=$1 rules
-    command -v "$cmd" >/dev/null 2>&1 || return 1
-    rules="$("$cmd" -S INPUT 2>/dev/null)" || return 1
-    [[ -n "$rules" ]] || return 1
-    if [[ "$rules" == *"-P INPUT DROP"* || "$rules" == *"-P INPUT REJECT"* ]]; then
-        return 0
-    fi
-    printf '%s\n' "$rules" | grep -qv '^-P INPUT '
-}
-
-fw_backend() {
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-        echo ufw
-        return
-    fi
-    if command -v firewall-cmd >/dev/null 2>&1 && [[ "$(firewall-cmd --state 2>/dev/null || true)" == running ]]; then
-        echo firewalld
-        return
-    fi
-    if ipt_active iptables || ipt_active ip6tables; then
-        echo iptables
-        return
-    fi
-    echo none
-}
-
-fw_persist_iptables() {
-    if ! command -v netfilter-persistent >/dev/null 2>&1; then
-        info "Installing netfilter-persistent so the iptables rules survive a reboot..."
-        command -v apt-get >/dev/null 2>&1 || { warn "apt-get is not available; iptables rules will not survive a reboot."; FW_PERSIST_FAILED=1; FW_ERRORS+=("netfilter-persistent is missing and apt-get is not available"); return 1; }
-        if command -v debconf-set-selections >/dev/null 2>&1; then
-            printf '%s\n' \
-                'iptables-persistent iptables-persistent/autosave_v4 boolean true' \
-                'iptables-persistent iptables-persistent/autosave_v6 boolean true' \
-                | debconf-set-selections || true
-        fi
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends netfilter-persistent iptables-persistent; then
-            warn "Failed to install netfilter-persistent; iptables rules will not survive a reboot."
-            FW_PERSIST_FAILED=1
-            FW_ERRORS+=("apt-get install netfilter-persistent iptables-persistent failed")
-            return 1
-        fi
-    fi
-    fw_run - netfilter-persistent save
-}
-
-fw_iptables_apply() {
-    local mode=$1 cmd rule proto port
-    for cmd in iptables ip6tables; do
-        ipt_active "$cmd" || continue
-        for rule in "${FW_RULES[@]}"; do
-            port=${rule%%/*}
-            proto=${rule##*/}
-            if [[ "$mode" == add ]]; then
-                "$cmd" -C INPUT -p "$proto" --dport "$port" -m comment --comment "$FW_COMMENT" -j ACCEPT >/dev/null 2>&1 \
-                    || fw_run "$rule" "$cmd" -I INPUT -p "$proto" --dport "$port" -m comment --comment "$FW_COMMENT" -j ACCEPT || true
-            else
-                while "$cmd" -C INPUT -p "$proto" --dport "$port" -m comment --comment "$FW_COMMENT" -j ACCEPT >/dev/null 2>&1; do
-                    fw_run "$rule" "$cmd" -D INPUT -p "$proto" --dport "$port" -m comment --comment "$FW_COMMENT" -j ACCEPT || break
-                done
-            fi
-        done
-    done
-}
-
-# firewall_apply add|remove
-firewall_apply() {
-    local mode=$1 backend rule done_word=added
-    [[ "$mode" == remove ]] && done_word=removed
-    backend="$(fw_backend)"
-    FW_BACKEND=$backend
-    case "$backend" in
-        ufw)
-            for rule in "${FW_RULES[@]}"; do
-                if [[ "$mode" == add ]]; then
-                    fw_run "$rule" ufw allow "$rule" comment "$FW_COMMENT" || true
-                else
-                    fw_run "$rule" ufw delete allow "$rule" || true
-                fi
-            done
-            info "Firewall: ufw rules ${done_word} (ufw persists them itself)."
-            ;;
-        firewalld)
-            for rule in "${FW_RULES[@]}"; do
-                if [[ "$mode" == add ]]; then
-                    firewall-cmd --permanent --query-port="$rule" >/dev/null 2>&1 || fw_run "$rule" firewall-cmd --permanent --add-port="$rule" || true
-                    firewall-cmd --query-port="$rule" >/dev/null 2>&1 || fw_run "$rule" firewall-cmd --add-port="$rule" || true
-                else
-                    if firewall-cmd --permanent --query-port="$rule" >/dev/null 2>&1; then
-                        fw_run "$rule" firewall-cmd --permanent --remove-port="$rule" || true
-                    fi
-                    if firewall-cmd --query-port="$rule" >/dev/null 2>&1; then
-                        fw_run "$rule" firewall-cmd --remove-port="$rule" || true
-                    fi
-                fi
-            done
-            info "Firewall: firewalld ports ${done_word} (permanent and runtime)."
-            ;;
-        iptables)
-            fw_iptables_apply "$mode"
-            if [[ "$mode" == add ]] || command -v netfilter-persistent >/dev/null 2>&1; then
-                fw_persist_iptables || true
-            fi
-            info "Firewall: iptables rules ${done_word}."
-            ;;
-        *)
-            info "Firewall: no active local firewall detected. Nothing to change."
-            ;;
-    esac
-}
-
-cloud_reminder() {
+# port_notice add|remove: stdout notice about the three ISP ports.
+port_notice() {
     local mode=$1
     echo
     if [[ "$mode" == add ]]; then
-        echo "Cloud security group: allow ${SS_ISP_PORT}/tcp, ${SS_ISP_PORT}/udp and ${VLESS_ISP_PORT}/tcp in your provider's console too."
-    else
-        echo "Cloud security group: you can now close ${SS_ISP_PORT}/tcp, ${SS_ISP_PORT}/udp and ${VLESS_ISP_PORT}/tcp in your provider's console."
-    fi
-}
+        cat <<NOTICE
+ACTION REQUIRED: allow these ports yourself. This script does not open any port.
+  ${SS_ISP_PORT}/tcp  (${SS_ISP_TAG}, Shadowsocks)
+  ${SS_ISP_PORT}/udp  (${SS_ISP_TAG}, Shadowsocks)
+  ${VLESS_ISP_PORT}/tcp  (${VLESS_ISP_TAG}, VLESS Reality)
+Allow them in BOTH places, otherwise the new ports are not reachable from outside:
+  1. the local firewall on this server, if you run one (ufw, firewalld or iptables);
+  2. your cloud provider's security group (or network ACL) for this server.
+Ports ${SS_PORT} and ${VLESS_PORT} are not affected.
 
-# rule_label PORT/PROTO: the rule with the inbound it belongs to.
-rule_label() {
-    case "${1%%/*}" in
-        "$SS_ISP_PORT") printf '%s (%s)' "$1" "$SS_ISP_TAG" ;;
-        "$VLESS_ISP_PORT") printf '%s (%s)' "$1" "$VLESS_ISP_TAG" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
-# report_firewall_failures add|remove: when a firewall step failed, print a
-# complete hint on stderr and return 1 (the caller exits non-zero). The service
-# has already been verified healthy and is deliberately not rolled back.
-report_firewall_failures() {
-    local mode=$1 rule port proto verb verb_past e
-    local -a failed=()
-    if ((${#FW_FAIL_RULES[@]} == 0 && FW_PERSIST_FAILED == 0)); then
-        return 0
-    fi
-    # Keep the order of FW_RULES and list only the rules that failed.
-    for rule in "${FW_RULES[@]}"; do
-        for e in "${FW_FAIL_RULES[@]+"${FW_FAIL_RULES[@]}"}"; do
-            [[ "$e" == "$rule" ]] && failed+=("$rule")
-        done
-    done
-    if [[ "$mode" == add ]]; then
-        verb=open
-        verb_past=opened
+Example commands for reference (run as root, use the one for your firewall):
+  ufw (rules are persistent already):
+    ufw allow ${SS_ISP_PORT}/tcp
+    ufw allow ${SS_ISP_PORT}/udp
+    ufw allow ${VLESS_ISP_PORT}/tcp
+  firewalld (use --permanent, then --reload):
+    firewall-cmd --permanent --add-port=${SS_ISP_PORT}/tcp
+    firewall-cmd --permanent --add-port=${SS_ISP_PORT}/udp
+    firewall-cmd --permanent --add-port=${VLESS_ISP_PORT}/tcp
+    firewall-cmd --reload
+  iptables (lost on reboot unless saved; repeat with ip6tables if you filter IPv6):
+    iptables -I INPUT -p tcp --dport ${SS_ISP_PORT} -j ACCEPT
+    iptables -I INPUT -p udp --dport ${SS_ISP_PORT} -j ACCEPT
+    iptables -I INPUT -p tcp --dport ${VLESS_ISP_PORT} -j ACCEPT
+    then save them: netfilter-persistent save
+    or: iptables-save > /etc/iptables/rules.v4
+    (install iptables-persistent first if it is missing: apt-get install -y iptables-persistent;
+     both ways save the whole current iptables ruleset, not only these rules)
+NOTICE
     else
-        verb=close
-        verb_past=closed
+        cat <<NOTICE
+NOTE: the ISP ports are no longer used, so you can now close them yourself. This script does not close any port.
+  ${SS_ISP_PORT}/tcp
+  ${SS_ISP_PORT}/udp
+  ${VLESS_ISP_PORT}/tcp
+Close them in BOTH places if you opened them:
+  1. the local firewall on this server;
+  2. your cloud provider's security group (or network ACL).
+Closing a rule by port also removes a rule you added yourself for the same port, so check first.
+
+Example commands for reference (run as root, use the one for your firewall):
+  ufw:
+    ufw delete allow ${SS_ISP_PORT}/tcp
+    ufw delete allow ${SS_ISP_PORT}/udp
+    ufw delete allow ${VLESS_ISP_PORT}/tcp
+  firewalld (use --permanent, then --reload):
+    firewall-cmd --permanent --remove-port=${SS_ISP_PORT}/tcp
+    firewall-cmd --permanent --remove-port=${SS_ISP_PORT}/udp
+    firewall-cmd --permanent --remove-port=${VLESS_ISP_PORT}/tcp
+    firewall-cmd --reload
+  iptables (then save the ruleset, as above):
+    iptables -D INPUT -p tcp --dport ${SS_ISP_PORT} -j ACCEPT
+    iptables -D INPUT -p udp --dport ${SS_ISP_PORT} -j ACCEPT
+    iptables -D INPUT -p tcp --dport ${VLESS_ISP_PORT} -j ACCEPT
+    then: netfilter-persistent save   (or: iptables-save > /etc/iptables/rules.v4)
+NOTICE
     fi
-    {
-        echo
-        if ((${#failed[@]} > 0)); then
-            echo "Warning: the local firewall (backend: ${FW_BACKEND}) failed to ${verb} these ports:"
-            for rule in "${failed[@]}"; do
-                echo "  - $(rule_label "$rule")"
-            done
-        else
-            echo "Warning: the local firewall (backend: ${FW_BACKEND}) ${verb_past} the ports, but saving the rules failed, so they will not survive a reboot."
-        fi
-        echo "Failure reason (backend: ${FW_BACKEND}), backend error output:"
-        for e in "${FW_ERRORS[@]}"; do
-            printf '%s\n' "$e" | sed '1s/^/  /;2,$s/^/      /'
-        done
-        if [[ "$mode" == add ]]; then
-            echo "sing-box was verified healthy and is NOT rolled back; ports ${SS_PORT} and ${VLESS_PORT} are not affected. This script now exits with a non-zero status."
-        else
-            echo "sing-box is already running without the ISP outbound and is NOT rolled back. This script now exits with a non-zero status."
-        fi
-        if ((${#failed[@]} == 0)); then
-            failed=("${FW_RULES[@]}")
-        fi
-        echo
-        if [[ "$mode" == add ]]; then
-            echo "Open them by hand (as root; use the block for the firewall you run, only the ports listed above):"
-        else
-            echo "Close them by hand (as root; use the block for the firewall you run, only the ports listed above):"
-        fi
-        echo "  ufw (rules are persistent already, nothing more to do):"
-        for rule in "${failed[@]}"; do
-            if [[ "$mode" == add ]]; then
-                echo "    ufw allow ${rule} comment ${FW_COMMENT}"
-            else
-                echo "    ufw delete allow ${rule}"
-            fi
-        done
-        echo "  firewalld (use --permanent, then --reload so the runtime and permanent rules match):"
-        for rule in "${failed[@]}"; do
-            if [[ "$mode" == add ]]; then
-                echo "    firewall-cmd --permanent --add-port=${rule}"
-            else
-                echo "    firewall-cmd --permanent --remove-port=${rule}"
-            fi
-        done
-        echo "    firewall-cmd --reload"
-        echo "  iptables (rules are lost on reboot unless you save them; repeat with ip6tables if you filter IPv6):"
-        for rule in "${failed[@]}"; do
-            port=${rule%%/*}
-            proto=${rule##*/}
-            if [[ "$mode" == add ]]; then
-                echo "    iptables -I INPUT -p ${proto} --dport ${port} -m comment --comment ${FW_COMMENT} -j ACCEPT"
-            else
-                echo "    iptables -D INPUT -p ${proto} --dport ${port} -m comment --comment ${FW_COMMENT} -j ACCEPT"
-            fi
-        done
-        echo "    then save them so they survive a reboot, with either:"
-        echo "      netfilter-persistent save"
-        echo "      iptables-save > /etc/iptables/rules.v4"
-        echo "    (install iptables-persistent first if it is missing: apt-get install -y iptables-persistent;"
-        echo "     both ways save the whole current iptables ruleset, not only these rules)"
-        echo
-        if [[ "$mode" == add ]]; then
-            echo "Cloud security group: also allow $(printf '%s ' "${failed[@]}")in your cloud provider's security group."
-            echo "After opening the ports, re-run: sudo bash scripts/isp-outbound.sh --add"
-            echo "so it finishes the remaining steps. It asks for the address, username and password again"
-            echo "(leave the password blank to keep the stored one) and repeats the egress check through the"
-            echo "SOCKS5 proxy, so the proxy must be working when you re-run it."
-        else
-            echo "Cloud security group: you can also close $(printf '%s ' "${failed[@]}")in your cloud provider's security group."
-            echo "After closing the ports, re-run: sudo bash scripts/isp-outbound.sh --remove"
-            echo "so it finishes the remaining steps."
-            echo "Note: closing by port also removes a ufw/firewalld rule you added yourself for the same port."
-        fi
-    } >&2
-    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1105,8 +1015,8 @@ collect_inputs() {
     local cur_addr cur_user cur_pass cur_egress raw pass2 expected_default
 
     cur_addr="$(env_get ISP_SOCKS_ADDR)"
-    cur_user="$(b64_decode "$(env_get ISP_SOCKS_USER)" || true)"
-    cur_pass="$(b64_decode "$(env_get ISP_SOCKS_PASS)" || true)"
+    cur_user="$(env_get_plain ISP_SOCKS_USER || true)"
+    cur_pass="$(env_get_plain ISP_SOCKS_PASS || true)"
     cur_egress="$(env_get ISP_SOCKS_EGRESS_IP)"
 
     if [[ -n "$cur_addr" ]]; then
@@ -1187,8 +1097,6 @@ do_add() {
     local cfg_cand env_cand clash_cand="" changed=1 clash_state env_header
     local env_changed=0 clash_changed=0
 
-    ensure_jq
-    preflight_docker
     preflight_config
     [[ -f "$ENV_FILE" ]] || die ".env does not exist. Run scripts/gen-keys.sh first."
     preflight_ports
@@ -1197,10 +1105,6 @@ do_add() {
     check_socks_egress
 
     # Build every candidate before touching anything.
-    mktmp; cfg_cand=$MKTMP
-    render_config_add "$cfg_cand" || die "Failed to build the candidate config.json."
-    validate_candidate "$cfg_cand"
-
     mktmp; env_cand=$MKTMP
     {
         env_without_isp "$ENV_FILE"
@@ -1212,15 +1116,27 @@ do_add() {
         fi
         printf '\n%s\n' "$env_header"
         printf 'ISP_SOCKS_ADDR=%s\n' "$ISP_ADDR"
-        printf 'ISP_SOCKS_USER=%s\n' "$(b64_encode "$ISP_USER")"
-        printf 'ISP_SOCKS_PASS=%s\n' "$(b64_encode "$ISP_PASS")"
+        printf 'ISP_SOCKS_USER=%s\n' "$(env_quote "$ISP_USER")"
+        printf 'ISP_SOCKS_PASS=%s\n' "$(env_quote "$ISP_PASS")"
         printf 'ISP_SOCKS_EGRESS_IP=%s\n' "$ISP_EGRESS_IP"
     } > "$env_cand"
+
+    # config.json is rendered from the values as stored in .env, so what the
+    # service runs is exactly what a later run reads back.
+    local want_addr=$ISP_ADDR want_user=$ISP_USER want_pass=$ISP_PASS want_egress=$ISP_EGRESS_IP
+    load_isp_from_env "$env_cand" || die "Internal error: could not read the ISP values back from the new .env. Nothing was changed."
+    if [[ "$ISP_ADDR" != "$want_addr" || "$ISP_USER" != "$want_user" || "$ISP_PASS" != "$want_pass" || "$ISP_EGRESS_IP" != "$want_egress" ]]; then
+        die "Internal error: the ISP values read back from the new .env differ from the ones entered. Nothing was changed."
+    fi
+
+    mktmp; cfg_cand=$MKTMP
+    render_config_add "$cfg_cand" || die "Failed to build the candidate config.json."
+    validate_candidate "$cfg_cand"
 
     if [[ -f "$CLASH_FILE" ]]; then
         mktmp; clash_cand=$MKTMP
         clash_render_add "$clash_cand"
-        clash_state="clash.yaml updated (nodes ${NODE_SS}-isp, ${NODE_VLESS}-isp; group ${GROUP_ISP})."
+        clash_state="clash.yaml updated (nodes ${NODE_SS}-isp and ${NODE_VLESS}-isp added and listed in the ${GROUP_MAIN} group)."
     else
         warn "clash.yaml does not exist, so only the server config is changed. After running scripts/conf-clash.sh, re-run this script with --add to add the client nodes."
         clash_state="clash.yaml not found (skipped)."
@@ -1260,7 +1176,7 @@ do_add() {
             confirm_restart
             if ! recreate || ! verify_service 1; then
                 show_logs
-                die "sing-box still does not run the ISP outbound after a restart. config.json, .env and clash.yaml were not changed and no firewall rule was touched. Check: docker compose logs sing-box"
+                die "sing-box still does not run the ISP outbound after a restart. config.json, .env and clash.yaml were not changed. Check: docker compose logs sing-box"
             fi
         fi
     fi
@@ -1271,8 +1187,6 @@ do_add() {
         install_file "$clash_cand" "$CLASH_FILE"
     fi
 
-    firewall_apply add
-
     echo
     echo "ISP outbound is active."
     echo "  shadowsocks-isp    port ${SS_ISP_PORT} (tcp+udp), tag ${SS_ISP_TAG}"
@@ -1282,9 +1196,8 @@ do_add() {
     echo "Notes:"
     echo "  - Only TCP was tested. UDP through the ISP (Shadowsocks UDP) works only if the proxy supports SOCKS5 UDP ASSOCIATE."
     echo "  - If the ISP proxy stops working, the ISP nodes fail. They never fall back to a direct connection."
-    echo "  - Re-import clash.yaml in your clients to see the new ${GROUP_ISP} group."
-    cloud_reminder add
-    report_firewall_failures add || exit 1
+    echo "  - Re-import clash.yaml in your clients to see the new ${NODE_SS}-isp and ${NODE_VLESS}-isp nodes in the ${GROUP_MAIN} group."
+    port_notice add
 }
 
 # ---------------------------------------------------------------------------
@@ -1294,8 +1207,6 @@ do_add() {
 do_remove() {
     local cfg_cand env_cand clash_cand="" cfg_changed=0 env_changed=0 clash_changed=0
 
-    ensure_jq
-    preflight_docker
     preflight_config
 
     mktmp; cfg_cand=$MKTMP
@@ -1343,8 +1254,6 @@ do_remove() {
         install_file "$clash_cand" "$CLASH_FILE"
     fi
 
-    firewall_apply remove
-
     echo
     if ((cfg_changed + env_changed + clash_changed == 0)); then
         echo "No ISP outbound was configured. Nothing to remove."
@@ -1352,10 +1261,9 @@ do_remove() {
         echo "ISP outbound removed."
         [[ "$cfg_changed" -eq 1 ]] && echo "  config.json: ISP inbounds, outbound and route rule removed; sing-box restarted."
         [[ "$env_changed" -eq 1 ]] && echo "  .env: ISP_SOCKS_* keys removed."
-        [[ "$clash_changed" -eq 1 ]] && echo "  clash.yaml: ISP nodes and ${GROUP_ISP} group removed. Re-import it in your clients."
+        [[ "$clash_changed" -eq 1 ]] && echo "  clash.yaml: ISP nodes removed from the nodes list and the ${GROUP_MAIN} group. Re-import it in your clients."
     fi
-    cloud_reminder remove
-    report_firewall_failures remove || exit 1
+    port_notice remove
 }
 
 # ---------------------------------------------------------------------------
@@ -1373,7 +1281,10 @@ while (($# > 0)); do
     shift
 done
 
-require_root
+# Fail early, before the menu and before anything is written.
+require_jq
+preflight_docker
+preflight_access
 
 if [[ -z "$ACTION" ]]; then
     echo "1) Add ISP outbound"

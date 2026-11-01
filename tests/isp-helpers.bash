@@ -3,8 +3,10 @@
 # Everything external to the script is a PATH stub driven by files in
 # $STUB_STATE, so the tests never touch Docker, a real firewall or the network:
 #
-#   docker, curl, ss, id, sleep, apt-get, ufw, firewall-cmd, iptables, ip6tables,
-#   debconf-set-selections
+#   docker, curl, ss, sleep
+# plus tripwires that only log their call and succeed: apt-get, sudo, ufw,
+# firewall-cmd, iptables, ip6tables, netfilter-persistent, debconf-set-selections.
+# isp-outbound.sh must never call them (see assert_no_system_changes).
 #
 # Failure switches (create the file to turn it on):
 #   fail_check       docker run ... check fails (candidate config rejected)
@@ -17,10 +19,8 @@
 #   fail_curl        every curl call fails
 #   term_on_up       compose up with the ISP config sends SIGTERM to the script
 #                    (the container keeps running the old config)
-# Value files: uid (default 0), egress_ip (default 198.51.100.7), backend
-# (none|ufw|firewalld|iptables), fail_fw (a command name that must fail),
-# fail_fw_rule (optional PORT/PROTO: only that rule fails; default all rules).
-# A failing firewall stub prints "stub-<name>: ... " on stderr.
+#   docker_denied    docker info fails with "permission denied" (socket not accessible)
+# Value files: egress_ip (default 198.51.100.7).
 
 load helpers
 
@@ -37,16 +37,6 @@ write_stub() {
 install_isp_stubs() {
     REAL_JQ="$(command -v jq)"
     export REAL_JQ STUB_STATE STUB_DIR
-
-    write_stub id <<'STUB'
-#!/usr/bin/env bash
-echo "id $*" >> "$STUB_LOG"
-if [[ "$*" == "-u" ]]; then
-    cat "$STUB_STATE/uid" 2>/dev/null || echo 0
-else
-    exec /usr/bin/id "$@"
-fi
-STUB
 
     write_stub sleep <<'STUB'
 #!/usr/bin/env bash
@@ -82,6 +72,10 @@ echo "docker $*" >> "$STUB_LOG"
 S="$STUB_STATE"
 case "$1" in
     info)
+        if [[ -e "$S/docker_denied" ]]; then
+            echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/info\": dial unix /var/run/docker.sock: connect: permission denied" >&2
+            exit 1
+        fi
         [[ -e "$S/docker_down" ]] && exit 1
         exit 0 ;;
     inspect)
@@ -146,129 +140,15 @@ esac
 exit 0
 STUB
 
-    write_stub apt-get <<'STUB'
+    # Tripwires: the script must never install anything, use sudo or touch a firewall.
+    local t
+    for t in apt-get sudo ufw firewall-cmd iptables ip6tables netfilter-persistent debconf-set-selections; do
+        write_stub "$t" <<'STUB'
 #!/usr/bin/env bash
-echo "apt-get $*" >> "$STUB_LOG"
-[[ -e "$STUB_STATE/fail_apt" ]] && exit 100
-case "$*" in
-    *install*jq*) ln -sf "$REAL_JQ" "$STUB_DIR/jq" ;;
-esac
-case "$*" in
-    *install*netfilter-persistent*)
-        printf '#!/usr/bin/env bash\necho "netfilter-persistent $*" >> "$STUB_LOG"\nexit 0\n' > "$STUB_DIR/netfilter-persistent"
-        chmod +x "$STUB_DIR/netfilter-persistent" ;;
-esac
+echo "$(basename "$0") $*" >> "$STUB_LOG"
 exit 0
 STUB
-
-    write_stub debconf-set-selections <<'STUB'
-#!/usr/bin/env bash
-cat > /dev/null
-echo "debconf-set-selections $*" >> "$STUB_LOG"
-exit 0
-STUB
-
-    write_stub ufw <<'STUB'
-#!/usr/bin/env bash
-echo "ufw $*" >> "$STUB_LOG"
-if [[ "$1" == status ]]; then
-    if [[ "$(cat "$STUB_STATE/backend")" == ufw ]]; then echo "Status: active"; else echo "Status: inactive"; fi
-    exit 0
-fi
-if [[ "$(cat "$STUB_STATE/fail_fw" 2>/dev/null)" == ufw ]]; then
-    rule=$2
-    [[ "$1" == delete ]] && rule=$3
-    only=$(cat "$STUB_STATE/fail_fw_rule" 2>/dev/null || true)
-    if [[ -z "$only" || "$only" == "$rule" ]]; then
-        echo "stub-ufw: ERROR: could not update rules for $rule" >&2
-        exit 1
-    fi
-fi
-exit 0
-STUB
-
-    write_stub firewall-cmd <<'STUB'
-#!/usr/bin/env bash
-echo "firewall-cmd $*" >> "$STUB_LOG"
-S="$STUB_STATE"
-if [[ "$1" == --state ]]; then
-    if [[ "$(cat "$S/backend")" == firewalld ]]; then echo running; exit 0; fi
-    echo "not running"; exit 252
-fi
-if [[ "$(cat "$S/fail_fw" 2>/dev/null)" == firewall-cmd ]]; then
-    case "$*" in
-        *--add-port=*|*--remove-port=*)
-            rule=${*##*-port=}
-            rule=${rule%% *}
-            only=$(cat "$S/fail_fw_rule" 2>/dev/null || true)
-            if [[ -z "$only" || "$only" == "$rule" ]]; then
-                echo "stub-firewalld: Error: COMMAND_FAILED: could not change $rule" >&2
-                exit 1
-            fi ;;
-    esac
-fi
-scope=run
-args=()
-for a in "$@"; do
-    if [[ "$a" == --permanent ]]; then scope=perm; else args+=("$a"); fi
-done
-case "${args[0]}" in
-    --query-port=*) grep -qxF "$scope:${args[0]#--query-port=}" "$S/firewalld_ports" ;;
-    --add-port=*) echo "$scope:${args[0]#--add-port=}" >> "$S/firewalld_ports" ;;
-    --remove-port=*) grep -vxF "$scope:${args[0]#--remove-port=}" "$S/firewalld_ports" > "$S/fwd.tmp" || true; mv "$S/fwd.tmp" "$S/firewalld_ports" ;;
-esac
-STUB
-
-    write_stub iptables <<'STUB'
-#!/usr/bin/env bash
-echo "iptables $*" >> "$STUB_LOG"
-S="$STUB_STATE"
-rules="$S/ipt_rules"
-key() { printf '%s %s' "$1" "$2"; }   # proto port
-case "$1" in
-    -S)
-        if [[ "$(cat "$S/backend")" == iptables ]]; then
-            echo "-P INPUT DROP"
-            cat "$rules"
-        else
-            echo "-P INPUT ACCEPT"
-        fi
-        exit 0 ;;
-    -C|-I|-D)
-        mode=$1
-        proto=""; port=""
-        while (($#)); do
-            case "$1" in
-                -p) proto=$2; shift ;;
-                --dport) port=$2; shift ;;
-            esac
-            shift
-        done
-        if [[ "$mode" != -C && "$(cat "$S/fail_fw" 2>/dev/null)" == iptables ]]; then
-            only=$(cat "$S/fail_fw_rule" 2>/dev/null || true)
-            if [[ -z "$only" || "$only" == "$port/$proto" ]]; then
-                echo "stub-iptables: iptables: Resource temporarily unavailable ($port/$proto)" >&2
-                exit 1
-            fi
-        fi
-        line="-A INPUT -p $proto --dport $port -m comment --comment my-singbox-isp -j ACCEPT"
-        case "$mode" in
-            -C) grep -qxF -- "$line" "$rules" ;;
-            -I) echo "$line" >> "$rules" ;;
-            -D) grep -vxF -- "$line" "$rules" > "$S/ipt.tmp" || true; mv "$S/ipt.tmp" "$rules" ;;
-        esac
-        exit $? ;;
-esac
-exit 0
-STUB
-
-    write_stub ip6tables <<'STUB'
-#!/usr/bin/env bash
-echo "ip6tables $*" >> "$STUB_LOG"
-[[ "$1" == -S ]] && echo "-P INPUT ACCEPT"
-[[ "$1" == -C ]] && exit 1
-exit 0
-STUB
+    done
 }
 
 # setup_isp_env [config-modifier-jq-filter]
@@ -286,9 +166,6 @@ setup_isp_env() {
     fi
     printf 'tcp 8388\nudp 8388\ntcp 8443\n' > "$STUB_STATE/listeners"
     echo running > "$STUB_STATE/status"
-    echo none > "$STUB_STATE/backend"
-    : > "$STUB_STATE/ipt_rules"
-    : > "$STUB_STATE/firewalld_ports"
     install_isp_stubs
     ISP="$PROJECT/scripts/isp-outbound.sh"
     export STUB_STATE

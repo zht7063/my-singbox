@@ -12,10 +12,10 @@ setup() {
 
 # Value sets appended to .env. Each is a newline-separated list of lines.
 ISP_EMPTY=$'ISP_SOCKS_ADDR=\nISP_SOCKS_USER=\nISP_SOCKS_PASS=\nISP_SOCKS_EGRESS_IP='
-ISP_B64=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER=b64:dXNlci5uYW1l\nISP_SOCKS_PASS=b64:cEBzczp3L3JkIzEkSE9NRSBgaWRgOyJhJ2JcZA+/==\nISP_SOCKS_EGRESS_IP=198.51.100.99'
-ISP_B64_IPV6=$'ISP_SOCKS_ADDR=[2001:db8::1]:1080\nISP_SOCKS_USER=b64:+/+/\nISP_SOCKS_PASS=b64:A==\nISP_SOCKS_EGRESS_IP=2001:db8::99'
+ISP_QUOTED=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER="user.name"\nISP_SOCKS_PASS="p@ss:w/rd#1 $$HOME `id` \\"a\'b\\\\d"\nISP_SOCKS_EGRESS_IP=198.51.100.99'
+ISP_QUOTED_IPV6=$'ISP_SOCKS_ADDR=[2001:db8::1]:1080\nISP_SOCKS_USER="u"\nISP_SOCKS_PASS="x$$"\nISP_SOCKS_EGRESS_IP=2001:db8::99'
 ISP_RAW=$'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER=us er\nISP_SOCKS_PASS=p@ss:w/rd#1 $HOME `id` "a\'b\\c"'
-ISP_ONE_KEY=$'ISP_SOCKS_PASS=b64:c2VjcmV0'
+ISP_ONE_KEY=$'ISP_SOCKS_PASS="secret"'
 ISP_EGRESS_ONLY=$'ISP_SOCKS_EGRESS_IP=198.51.100.99'
 
 # render SCRIPT OUTPUT_NAME -> run the script, then move its output to
@@ -91,12 +91,12 @@ assert_unchanged() {
     assert_unchanged gen-config.sh config.json "$ISP_EMPTY"
 }
 
-@test "gen-config: output is byte-identical with b64:-prefixed ISP values" {
-    assert_unchanged gen-config.sh config.json "$ISP_B64"
+@test "gen-config: output is byte-identical with quoted plain-text ISP values" {
+    assert_unchanged gen-config.sh config.json "$ISP_QUOTED"
 }
 
-@test "gen-config: output is byte-identical with b64: IPv6 address form" {
-    assert_unchanged gen-config.sh config.json "$ISP_B64_IPV6"
+@test "gen-config: output is byte-identical with the IPv6 address form" {
+    assert_unchanged gen-config.sh config.json "$ISP_QUOTED_IPV6"
 }
 
 @test "gen-config: output is byte-identical with raw special characters in ISP values" {
@@ -113,7 +113,7 @@ assert_unchanged() {
 
 @test "gen-config: ISP keys placed before the other keys are accepted" {
     render_to gen-config.sh config.json baseline
-    { printf '%s\n' "$ISP_B64"; cat "$PROJECT/.env"; } > "$PROJECT/.env.new"
+    { printf '%s\n' "$ISP_QUOTED"; cat "$PROJECT/.env"; } > "$PROJECT/.env.new"
     mv "$PROJECT/.env.new" "$PROJECT/.env"
     render_to gen-config.sh config.json withisp
     cmp "$BATS_TEST_TMPDIR/baseline.config.json" "$BATS_TEST_TMPDIR/withisp.config.json"
@@ -121,14 +121,14 @@ assert_unchanged() {
 
 @test "gen-config: ISP keys never satisfy a required key" {
     write_env SS_PASSWORD=
-    printf '%s\n' "$ISP_B64" >> "$PROJECT/.env"
+    printf '%s\n' "$ISP_QUOTED" >> "$PROJECT/.env"
     run bash "$PROJECT/scripts/gen-config.sh"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Missing .env key: SS_PASSWORD"* ]]
 }
 
 @test "gen-config: a duplicated ISP key still dies" {
-    printf '%s\n%s\n' 'ISP_SOCKS_USER=b64:YQ==' 'ISP_SOCKS_USER=b64:Yg==' >> "$PROJECT/.env"
+    printf '%s\n%s\n' 'ISP_SOCKS_USER="a"' 'ISP_SOCKS_USER="b"' >> "$PROJECT/.env"
     run bash "$PROJECT/scripts/gen-config.sh"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Duplicate .env key: ISP_SOCKS_USER"* ]]
@@ -175,12 +175,12 @@ assert_unchanged() {
     assert_unchanged conf-clash.sh clash.yaml "$ISP_EMPTY"
 }
 
-@test "conf-clash: output is byte-identical with b64:-prefixed ISP values" {
-    assert_unchanged conf-clash.sh clash.yaml "$ISP_B64"
+@test "conf-clash: output is byte-identical with quoted plain-text ISP values" {
+    assert_unchanged conf-clash.sh clash.yaml "$ISP_QUOTED"
 }
 
-@test "conf-clash: output is byte-identical with b64: IPv6 address form" {
-    assert_unchanged conf-clash.sh clash.yaml "$ISP_B64_IPV6"
+@test "conf-clash: output is byte-identical with the IPv6 address form" {
+    assert_unchanged conf-clash.sh clash.yaml "$ISP_QUOTED_IPV6"
 }
 
 @test "conf-clash: output is byte-identical with raw special characters in ISP values" {
@@ -197,14 +197,14 @@ assert_unchanged() {
 
 @test "conf-clash: ISP keys never satisfy a required key" {
     write_env SERVER_ADDRESS=
-    printf '%s\n' "$ISP_B64" >> "$PROJECT/.env"
+    printf '%s\n' "$ISP_QUOTED" >> "$PROJECT/.env"
     run bash "$PROJECT/scripts/conf-clash.sh"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Set SERVER_ADDRESS"* ]]
 }
 
 @test "conf-clash: a duplicated ISP key still dies" {
-    printf '%s\n%s\n' 'ISP_SOCKS_PASS=b64:YQ==' 'ISP_SOCKS_PASS=b64:Yg==' >> "$PROJECT/.env"
+    printf '%s\n%s\n' 'ISP_SOCKS_PASS="a"' 'ISP_SOCKS_PASS="b"' >> "$PROJECT/.env"
     run bash "$PROJECT/scripts/conf-clash.sh"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Duplicate key in .env: ISP_SOCKS_PASS"* ]]

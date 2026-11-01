@@ -25,6 +25,7 @@ jobs:
           shellcheck --version
           bats --version
           jq --version
+          docker compose version
 
       - name: ShellCheck
         run: shellcheck scripts/*.sh tests/*.bash
