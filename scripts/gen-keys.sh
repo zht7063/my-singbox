@@ -123,11 +123,11 @@ http_get() {
     local family=$1
     local url=$2
     if command -v curl >/dev/null 2>&1; then
-        curl -"$family" -fsS --max-time 8 -A "quick-sing-box-node" "$url" || return 1
+        curl -"$family" -fsS --max-time 8 -A "my-singbox" "$url" || return 1
         return 0
     fi
     if command -v wget >/dev/null 2>&1; then
-        wget -"$family" -qO- --timeout=8 -U "quick-sing-box-node" "$url" || return 1
+        wget -"$family" -qO- --timeout=8 -U "my-singbox" "$url" || return 1
         return 0
     fi
     return 1

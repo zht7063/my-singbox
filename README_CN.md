@@ -15,7 +15,7 @@
 
 ## 要求
 
-- Linux。部署目录可写，文件都放在 `/opt/sing-box/`。
+- Debian/Ubuntu。部署目录可写，文件都放在 `/opt/sing-box/`。
 - Docker、Docker Compose 插件（`docker compose version`），以及正在运行的 Docker daemon。
 - Debian/Ubuntu 先运行 `sudo bash scripts/init.sh`。它只安装缺失的非 Docker 依赖（`ca-certificates`、`curl`、`openssl`、提供 `ss` 的 `iproute2`、`git`；没有 `awk`、`grep` 或 `coreutils` 时也装上），不安装 Docker，也不改 SSH、防火墙、用户或密码。
 - openssl、curl（没有 curl 时 `gen-keys.sh` 接受 wget）。检测公网 IP 失败时才需要交互式终端。

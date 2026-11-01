@@ -91,12 +91,12 @@ if command -v docker >/dev/null 2>&1; then
     echo "docker: present"
 else
     echo "docker: absent"
-    echo "Warning: docker is not available. See README「附录：快速安装 Docker」." >&2
+    echo "Warning: docker is not available. See README.md (Appendix: Quick Docker installation) or README_CN.md (附录：快速安装 Docker)." >&2
 fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     echo "docker compose: present"
 else
     echo "docker compose: absent"
-    echo "Warning: docker compose is not available. See README「附录：快速安装 Docker」." >&2
+    echo "Warning: docker compose is not available. See README.md (Appendix: Quick Docker installation) or README_CN.md (附录：快速安装 Docker)." >&2
 fi

@@ -25,7 +25,7 @@ REQUIRED_KEYS=(
 )
 
 if [[ ! -f "$ENV_TEMPLATE" ]]; then
-    die "templates/.env.template does not exist."
+    die "Template does not exist: $ENV_TEMPLATE"
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -101,6 +101,9 @@ is_ipv4() {
     [[ "$value" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
     for octet in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
         if ((10#$octet > 255)); then
+            return 1
+        fi
+        if [[ ${#octet} -gt 1 && "$octet" == 0* ]]; then
             return 1
         fi
     done
