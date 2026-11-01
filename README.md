@@ -15,7 +15,7 @@ Ports `8388` and `8443` must be free. The ports are defined in `templates/config
 
 ## Requirements
 
-- Linux. The deployment directory must be writable; all files live in `/opt/sing-box/`.
+- Debian/Ubuntu. The deployment directory must be writable; all files live in `/opt/sing-box/`.
 - Docker, the Docker Compose plugin (`docker compose version`), and a running Docker daemon.
 - On Debian/Ubuntu, run `sudo bash scripts/init.sh` first. It installs only the missing non-Docker dependencies (`ca-certificates`, `curl`, `openssl`, `iproute2` which provides `ss`, `git`; it also installs `awk`, `grep`, or `coreutils` if they are missing). It does not install Docker, and it does not change SSH, the firewall, users, or passwords.
 - openssl and curl (`gen-keys.sh` accepts wget when curl is missing). An interactive terminal is needed only when public IP detection fails.
