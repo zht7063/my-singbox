@@ -72,7 +72,7 @@ docker compose down
 
 ## Optional: ISP outbound (static SOCKS5 egress)
 
-`scripts/isp-outbound.sh` is optional. Skip it and nothing changes: the three nodes keep using `8388` and `8443`, and no other script depends on it. Use it when you have a static ISP SOCKS5 proxy and want two extra ports whose traffic leaves through that proxy instead of the server's own IP.
+`scripts/isp-outbound.sh` is optional. Skip it and nothing changes: the two nodes keep using `8388` and `8443`, and no other script depends on it. Use it when you have a static ISP SOCKS5 proxy and want two extra ports whose traffic leaves through that proxy instead of the server's own IP.
 
 ```bash
 cd /opt/sing-box
@@ -81,7 +81,7 @@ bash scripts/isp-outbound.sh --add      # add or update
 bash scripts/isp-outbound.sh --remove   # remove everything it added
 ```
 
-It does not need root and it installs nothing. Two things must be in place, and it checks both before it writes anything:
+It needs no `sudo` or root of its own, and it installs nothing. Two things must be in place, and it checks both before it writes anything:
 
 - `jq`. `sudo bash scripts/init.sh` installs it (or `sudo apt-get install -y jq`). If it is missing the script stops with `jq is not installed. Run scripts/init.sh (sudo bash scripts/init.sh) or install jq ... Nothing was changed.`
 - Access to Docker. Run it as a user in the `docker` group, or with `sudo`. On `permission denied` on the Docker socket it stops at once with `permission denied while talking to the Docker daemon ... Nothing was changed.` and the two remedies: run the script with `sudo`, or add your user to the group (`sudo usermod -aG docker "$USER"`, then log out and back in). The same early stop, with a matching message, happens when the project directory or one of its files is not writable.
@@ -104,6 +104,21 @@ What `--add` does, in this order. If any step before the restart fails (includin
 5. Writes `.env` and `clash.yaml`, and prints the port notice below.
 
 Running `--add` twice with the same values changes nothing (and makes no new backup). `--remove` after `--add` restores `config.json`, `.env` and `clash.yaml` byte for byte for files in the format this project generates, including a `.env` or `clash.yaml` that has no trailing newline (the script leaves a marker comment so it can put that back). `config.json` is re-serialised by `jq`, so formatting you changed by hand in it is normalised. `--remove` also deletes any `ISP_SOCKS_*` keys in `.env`, including ones you wrote yourself.
+
+### Remove it
+
+```bash
+bash scripts/isp-outbound.sh --remove
+```
+
+`--remove` undoes everything `--add` did:
+
+- `config.json`: the two ISP inbounds, the `isp-socks` outbound and its route rule are deleted, and sing-box is restarted (it asks first, and it rolls back if sing-box does not come up).
+- `.env`: the `ISP_SOCKS_*` keys are deleted.
+- `clash.yaml`: the `shadowsocks-isp` and `vless-reality-isp` nodes are deleted from `proxies` and from the `Proxy` group, so the file is restored byte for byte. Re-import it in your clients.
+- A backup is made first (`.isp-backup/`). If nothing was configured it says so and changes nothing.
+
+It needs no `sudo` or root of its own and does not touch the firewall. It prints a note that `13839/tcp`, `13839/udp` and `18444/tcp` are no longer used and that you can close them yourself, in the local firewall and in the cloud security group.
 
 ### Open the ports yourself
 
@@ -142,7 +157,7 @@ Notes:
 - `.env` gets four optional keys: `ISP_SOCKS_ADDR`, `ISP_SOCKS_USER`, `ISP_SOCKS_PASS` and `ISP_SOCKS_EGRESS_IP`. They are stored as plain text, like the other `.env` values, and `.env` stays mode `600`. The username and password are wrapped in double quotes, with `\\` for a backslash, `\"` for a quote and `$$` for a dollar sign inside, so any value stays on one line and Docker Compose (which also reads `.env`) does not interpolate it or fail to parse it. A hand-written value without quotes is read as is. The password is never printed, logged or put on a command line.
 - `clash.yaml` gets two new nodes, `shadowsocks-isp` and `vless-reality-isp`, appended to the `proxies` list, and both names are added at the end of the existing `Proxy` group. No new group is created. The additions sit between `# BEGIN my-singbox-isp` and `# END my-singbox-isp` markers, and `--remove` deletes exactly those lines. Every rule stays as it is, so nothing is routed to the ISP nodes unless you pick them in the client. **Re-import `clash.yaml` in your clients afterwards.** `templates/clash.yaml.template` is not changed.
 - The script finds the source nodes only by their current names, `shadowsocks` and `vless-reality`, and the `Proxy` group by its name and its `proxies:` list. If your `clash.yaml` was generated before the rename, or no longer has this shape, it stops with a hint; delete `clash.yaml` and run `scripts/conf-clash.sh` again.
-- Only TCP through the proxy is tested. Shadowsocks UDP on `13839` works only if the SOCKS5 proxy supports UDP ASSOCIATE.
+- Only TCP egress is tested: the script checks the proxy with a TCP request only. UDP egress is not tested. Whether Shadowsocks UDP on `13839` works depends on your ISP's SOCKS5 proxy: it only works if the proxy supports UDP ASSOCIATE. Do not rely on it until you have tried it yourself.
 - Only one run at a time (lock file `.isp.lock`). Runtime files `.isp-backup/`, `.isp.lock` and `.isp-tmp.*` are in `.gitignore`. The `.isp-tmp.*` files can hold the password; they are deleted when the script ends, and leftovers from a killed run are swept at the start of the next run.
 
 ## Directory layout

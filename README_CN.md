@@ -72,7 +72,7 @@ docker compose down
 
 ## 可选：ISP 出口（静态 SOCKS5）
 
-`scripts/isp-outbound.sh` 是可选脚本。不运行就什么都不变：三个节点仍用 `8388` 和 `8443`，其他脚本也不依赖它。已有静态 ISP SOCKS5 代理、想多开两个出口走该代理（而不是服务器自身 IP）的端口时才用。
+`scripts/isp-outbound.sh` 是可选脚本。不运行就什么都不变：两个节点仍用 `8388` 和 `8443`，其他脚本也不依赖它。已有静态 ISP SOCKS5 代理、想多开两个出口走该代理（而不是服务器自身 IP）的端口时才用。
 
 ```bash
 cd /opt/sing-box
@@ -81,7 +81,7 @@ bash scripts/isp-outbound.sh --add      # 添加或更新
 bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 ```
 
-不需要 root，也不安装任何东西。写入任何文件之前，它会先检查两个前提：
+本身不需要 `sudo` 或 root，也不安装任何东西。写入任何文件之前，它会先检查两个前提：
 
 - `jq`。`sudo bash scripts/init.sh` 会安装它（或 `sudo apt-get install -y jq`）。缺少时脚本立即停止，提示 `jq is not installed. Run scripts/init.sh (sudo bash scripts/init.sh) or install jq ... Nothing was changed.`
 - 能访问 Docker。用 `docker` 组里的用户运行，或用 `sudo`。Docker socket 报 `permission denied` 时立即停止，提示 `permission denied while talking to the Docker daemon ... Nothing was changed.` 并给出两种办法：用 `sudo` 运行，或把当前用户加入该组（`sudo usermod -aG docker "$USER"`，然后退出并重新登录）。项目目录或其中的文件不可写时同样提前停止，并给出对应提示。
@@ -105,9 +105,24 @@ bash scripts/isp-outbound.sh --remove   # 移除它添加的全部内容
 
 用相同的值连续执行两次 `--add`，结果不变（也不会产生新备份）。`--add` 之后再 `--remove`，对于本项目生成格式的文件，`config.json`、`.env`、`clash.yaml` 逐字节恢复；`.env` 或 `clash.yaml` 末尾没有换行时也会原样恢复（脚本会留一条标记注释用来还原）。`config.json` 由 `jq` 重新序列化，你手工改过的格式会被规范化。`--remove` 还会删除 `.env` 中所有 `ISP_SOCKS_*` 键，包括你自己手写的。
 
+### 移除
+
+```bash
+bash scripts/isp-outbound.sh --remove
+```
+
+`--remove` 会撤销 `--add` 做的全部修改：
+
+- `config.json`：删除两个 ISP 入站、`isp-socks` 出站及其路由规则，并重启 sing-box（会先询问，sing-box 没有起来时会回滚）。
+- `.env`：删除 `ISP_SOCKS_*` 键。
+- `clash.yaml`：从 `proxies` 和 `Proxy` 组中删除 `shadowsocks-isp`、`vless-reality-isp`，文件逐字节恢复。请在客户端重新导入。
+- 修改之前会先备份（`.isp-backup/`）。如果本来就没有配置过，会提示并且不改动任何东西。
+
+本身不需要 `sudo` 或 root，也不碰防火墙。它会打印提示：`13839/tcp`、`13839/udp`、`18444/tcp` 不再使用，可以自己关闭（本机防火墙和云安全组两处）。
+
 ### 自己放行端口
 
-`--add` 成功后脚本会打印下面的提示（它不会开放任何端口）：
+`--add` 成功后脚本不会开放任何端口，只会打印下面的提示（脚本输出为英文）。意思是：你必须自己放行 `13839/tcp`、`13839/udp`、`18444/tcp`，本机防火墙和云厂商的安全组两处都要放行：
 
 ```text
 ACTION REQUIRED: allow these ports yourself. This script does not open any port.
@@ -142,7 +157,7 @@ iptables：   iptables -I INPUT -p tcp --dport 13839 -j ACCEPT（以及 udp 1383
 - `.env` 增加四个可选键：`ISP_SOCKS_ADDR`、`ISP_SOCKS_USER`、`ISP_SOCKS_PASS`、`ISP_SOCKS_EGRESS_IP`。和 `.env` 里的其他值一样以明文存储，`.env` 权限保持 `600`。用户名和密码用双引号包住，里面的反斜杠写成 `\\`，双引号写成 `\"`，美元符号写成 `$$`，这样任何值都只占一行，Docker Compose（它也会读取 `.env`）不会对它做变量替换，也不会解析失败。手写的不带引号的值按原样读取。密码不会被打印、写入日志或出现在命令行。
 - `clash.yaml` 新增两个节点 `shadowsocks-isp`、`vless-reality-isp`，追加到 `proxies` 列表末尾，并把这两个名字加到已有 `Proxy` 组的末尾，不创建新的组。新增内容位于 `# BEGIN my-singbox-isp` 和 `# END my-singbox-isp` 标记之间，`--remove` 恰好删掉这些行。所有规则不变，不在客户端里选择 ISP 节点就不会有流量走它们。**之后请在客户端重新导入 `clash.yaml`。** `templates/clash.yaml.template` 不会被修改。
 - 脚本只按当前名称 `shadowsocks`、`vless-reality` 查找源节点，并按名称和 `proxies:` 列表查找 `Proxy` 组。如果 `clash.yaml` 是改名之前生成的，或结构已不是这样，会提示并停止；删除 `clash.yaml` 后重新运行 `scripts/conf-clash.sh`。
-- 只测试经代理的 TCP。`13839` 上的 Shadowsocks UDP 仅在 SOCKS5 代理支持 UDP ASSOCIATE 时可用。
+- 只测试 TCP 出口：脚本只用 TCP 请求检查代理，没有测试 UDP 出口。`13839` 上的 Shadowsocks UDP 能否使用取决于你的 ISP 提供的 SOCKS5 代理：只有代理支持 UDP ASSOCIATE 才行。自己试过之前不要依赖它。
 - 同一时间只能运行一次（锁文件 `.isp.lock`）。运行时文件 `.isp-backup/`、`.isp.lock`、`.isp-tmp.*` 已写入 `.gitignore`。`.isp-tmp.*` 可能含密码；脚本结束时会删除它们，被强杀的运行留下的残留会在下次运行开始时清掉。
 
 ## 目录
