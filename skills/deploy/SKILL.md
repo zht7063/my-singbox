@@ -10,9 +10,9 @@ The scripts do the work. Stay inside `/opt/sing-box/` and do not invent a second
 ## Prerequisites
 
 - Linux server with root or sudo.
-- Docker, the Docker Compose plugin (`docker compose version`), and openssl. `docker info` must succeed before any script asks a question.
+- Docker, the Docker Compose plugin (`docker compose version`), openssl, and curl or wget. On Debian/Ubuntu, `apt install curl` provides curl. `docker info` must succeed before key generation.
 - Ports free on the host, and open in the host firewall and the cloud security group: `8388/tcp`, `8388/udp`, `8443/tcp`.
-- An interactive terminal. `scripts/gen-keys.sh` reads the public IP from the terminal.
+- An interactive terminal only if public IP detection fails.
 
 ## Leave other sing-box installs alone
 
@@ -46,7 +46,7 @@ bash scripts/start.sh
 
 | Script | Asks | Writes |
 | --- | --- | --- |
-| `scripts/gen-keys.sh` | Requires `SING_BOX_VERSION`. Checks `docker` and `openssl`, then `docker info`. Prompts `Public IP address of this machine:` and repeats until the address is a public IP. Private, loopback, and reserved addresses are rejected. | `.env` (mode `600`): image tag, VLESS UUID, Reality private and public keys, Reality short ID, Shadowsocks 2022 password, `SERVER_ADDRESS`. |
+| `scripts/gen-keys.sh` | Requires `SING_BOX_VERSION`. Checks `docker` and `openssl`, then `docker info`. Detects the public IP with curl or wget, preferring IPv4 and then IPv6. Prompts `Public IP address of this machine:` only when detection fails, and repeats until the address is a public IP. Private, loopback, and reserved addresses are rejected. | `.env` (mode `600`): image tag, VLESS UUID, Reality private and public keys, Reality short ID, Shadowsocks 2022 password, `SERVER_ADDRESS`. |
 | `scripts/gen-config.sh` | Nothing. Requires `.env` and `templates/config.json.template`. | `config.json` (mode `600`). Server inbound only. It does not embed `REALITY_PUBLIC_KEY` or `SERVER_ADDRESS`. |
 | `scripts/conf-clash.sh` | Nothing. Loads `templates/.env.template`, then `.env` overrides it. | `clash.yaml` (mode `600`) for mihomo. The Reality private key is refused. Rules are copied from the template. |
 | `scripts/start.sh` | Nothing. Requires `compose.yaml`, `config.json`, the Compose plugin, and a running daemon. | Runs `docker compose up -d`, waits until container `sing-box` stays up, runs `sing-box check` inside it, checks each `listen_port` on `127.0.0.1`, and checks UDP `8388` with `ss -uln` when `ss` exists. Missing `ss` is a warning, not a failure. Prints `Self-check passed. Ports: ...` |
