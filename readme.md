@@ -15,9 +15,11 @@
 
 ## 部署
 
-克隆本目录到本地，在项目根目录按顺序执行：
+把仓库放在 `/opt/sing-box/`。所有文件都在这个目录里，和 `compose.yaml` 放在一起。例如：
 
 ```bash
+git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+cd /opt/sing-box
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh
 bash scripts/gen-config.sh
 bash scripts/conf-clash.sh
