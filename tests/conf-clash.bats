@@ -43,13 +43,18 @@ run_conf_clash() {
     refute grep -F "$FIXTURE_PRIVATE_KEY" "$PROJECT/clash.yaml"
 }
 
-@test "conf-clash: keeps the two proxies and the PROXY group" {
+@test "conf-clash: has the two proxies and the Proxy group" {
     run_conf_clash
     [ "$status" -eq 0 ]
     local f="$PROJECT/clash.yaml"
-    grep -Eq '^  - name: "My-sing-box"$' "$f"
-    grep -Eq '^  - name: My-VLESS-Reality$' "$f"
-    grep -Eq '^  - name: PROXY$' "$f"
+    grep -Eq '^  - name: "shadowsocks"$' "$f"
+    grep -Eq '^  - name: vless-reality$' "$f"
+    grep -Eq '^  - name: Proxy$' "$f"
+    # The group lists both nodes and falls back to DIRECT.
+    grep -Eq '^      - shadowsocks$' "$f"
+    grep -Eq '^      - vless-reality$' "$f"
+    # No trace of the old names.
+    refute grep -Eq 'My-sing-box|My-VLESS-Reality|PROXY' "$f"
 }
 
 @test "conf-clash: refuses to overwrite an existing clash.yaml" {

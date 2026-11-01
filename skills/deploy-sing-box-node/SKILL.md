@@ -75,7 +75,7 @@ If a real client connection fails, change those three fields together and restar
 
 ## Client
 
-Hand over `/opt/sing-box/clash.yaml`. The mihomo client selects `My-sing-box` by default and can switch to `My-VLESS-Reality`. Both are under the `select` group `PROXY`.
+Hand over `/opt/sing-box/clash.yaml`. The mihomo client selects `shadowsocks` by default and can switch to `vless-reality`. Both are under the `select` group `Proxy`. (They were previously named `My-sing-box`, `My-VLESS-Reality` and `PROXY`; clients holding an old `clash.yaml` must re-import a regenerated one.)
 
 Do not edit the clash template's rules. Do not add `url-test`, `fallback`, `load-balance`, or any other automatic speed-test selection.
 
