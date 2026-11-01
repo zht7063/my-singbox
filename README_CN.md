@@ -2,7 +2,7 @@
 
 # My sing-box
 
-在 Linux 上用 Docker 运行 sing-box，并导出给 Mihomo 使用的 `clash.yaml`。
+在 Debian/Ubuntu VPS 上用 Docker 构建基于 sing-box 的 shadowsocks 2022 和 vless-reality-vision 节点，并导出给 Mihomo 使用的 `clash.yaml`。
 
 ## 部署内容
 

@@ -2,7 +2,7 @@
 
 # My sing-box
 
-Run sing-box in Docker on Linux, and export a `clash.yaml` for Mihomo.
+Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker on a Debian/Ubuntu VPS, and export a `clash.yaml` for Mihomo.
 
 ## What gets deployed
 
