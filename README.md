@@ -1,6 +1,6 @@
 **English** | [简体中文](README_CN.md)
 
-# Quick Sing-box Node
+# My sing-box
 
 Run sing-box in Docker on Linux, and export a `clash.yaml` for Mihomo.
 
@@ -26,7 +26,7 @@ Ports `8388` and `8443` must be free. The ports are defined in `templates/config
 ## Quick start
 
 ```bash
-git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh

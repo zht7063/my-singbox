@@ -1,6 +1,6 @@
 [English](README.md) | **简体中文**
 
-# Quick Sing-box Node
+# My sing-box
 
 在 Linux 上用 Docker 运行 sing-box，并导出给 Mihomo 使用的 `clash.yaml`。
 
@@ -26,7 +26,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh
