@@ -1,6 +1,8 @@
-# Quick Sing-box Node
+[English](README.md) | **简体中文**
 
-在 Linux 上用 Docker 运行 sing-box，并导出给 Mihomo 使用的 `clash.yaml`。
+# My sing-box
+
+在 Debian/Ubuntu VPS 上用 Docker 构建基于 sing-box 的 shadowsocks 2022 和 vless-reality-vision 节点，并导出给 Mihomo 使用的 `clash.yaml`。
 
 ## 部署内容
 
@@ -24,7 +26,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh

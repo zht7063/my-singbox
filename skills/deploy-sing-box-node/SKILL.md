@@ -29,7 +29,7 @@ This repo's install is the git checkout at `/opt/sing-box/` whose `compose.yaml`
 ## Install
 
 ```bash
-git clone https://github.com/zht7063/quick-sing-box-node.git /opt/sing-box
+git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 ```
 
