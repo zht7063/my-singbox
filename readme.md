@@ -15,7 +15,7 @@
 
 ## 部署
 
-代理部署按 [`skills/deploy/SKILL.md`](skills/deploy/SKILL.md)。
+代理部署按 [`skills/deploy-sing-box-node/SKILL.md`](skills/deploy-sing-box-node/SKILL.md)。
 
 把仓库放在 `/opt/sing-box/`。所有文件都在这个目录里，和 `compose.yaml` 放在一起。例如：
 

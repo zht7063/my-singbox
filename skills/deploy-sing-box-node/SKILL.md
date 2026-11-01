@@ -1,6 +1,6 @@
 ---
-name: deploy
-description: Deploy this repo's sing-box node on a Linux server at /opt/sing-box and hand the exported clash.yaml to mihomo. Use when installing, deploying, verifying, rolling back, or uninstalling this node. Do not use it to change an unrelated sing-box server.
+name: deploy-sing-box-node
+description: 'Deploys this repository''s sing-box node on a Linux server at /opt/sing-box by running its scripts, then hands the exported clash.yaml to a mihomo client. Applies when the user asks to install, deploy, start, verify, roll back, or uninstall this node; to open 8388/tcp, 8388/udp, or 8443/tcp; to pin or roll back the sing-box image; to change the Reality SNI; or to produce a mihomo profile from this repo, even if they never say "skill". Does not apply when the task is to reconfigure a sing-box install this repository did not create.'
 ---
 
 # Deploy this sing-box node
