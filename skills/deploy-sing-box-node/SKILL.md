@@ -10,7 +10,7 @@ The scripts do the work. Stay inside `/opt/sing-box/` and do not invent a second
 ## Prerequisites
 
 - Linux server with root or sudo.
-- Docker, the Docker Compose plugin (`docker compose version`), openssl, and curl or wget. On Debian/Ubuntu, `apt install curl` provides curl. `docker info` must succeed before key generation.
+- Docker, the Docker Compose plugin (`docker compose version`), openssl, and curl or wget. On Debian/Ubuntu, run `sudo bash scripts/init.sh` first. It installs missing non-Docker packages only. `docker info` must succeed before key generation.
 - Ports free on the host, and open in the host firewall and the cloud security group: `8388/tcp`, `8388/udp`, `8443/tcp`.
 - An interactive terminal only if public IP detection fails.
 
@@ -38,6 +38,7 @@ Generated files stay in this directory, next to `compose.yaml`. Do not copy them
 Run, from `/opt/sing-box`:
 
 ```bash
+sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh
 bash scripts/gen-config.sh
 bash scripts/conf-clash.sh
@@ -46,6 +47,7 @@ bash scripts/start.sh
 
 | Script | Asks | Writes |
 | --- | --- | --- |
+| `scripts/init.sh` | Root on Debian or Ubuntu (`sudo bash scripts/init.sh`). Installs missing apt packages other than Docker. Does not change SSH, the firewall, users, or passwords. | No project files. Prints which tools are present, and warns when docker or Compose is missing. |
 | `scripts/gen-keys.sh` | Requires `SING_BOX_VERSION`. Checks `docker` and `openssl`, then `docker info`. Detects the public IP with curl or wget, preferring IPv4 and then IPv6. Prompts `Public IP address of this machine:` only when detection fails, and repeats until the address is a public IP. Private, loopback, and reserved addresses are rejected. | `.env` (mode `600`): image tag, VLESS UUID, Reality private and public keys, Reality short ID, Shadowsocks 2022 password, `SERVER_ADDRESS`. |
 | `scripts/gen-config.sh` | Nothing. Requires `.env` and `templates/config.json.template`. | `config.json` (mode `600`). Server inbound only. It does not embed `REALITY_PUBLIC_KEY` or `SERVER_ADDRESS`. |
 | `scripts/conf-clash.sh` | Nothing. Loads `templates/.env.template`, then `.env` overrides it. | `clash.yaml` (mode `600`) for mihomo. The Reality private key is refused. Rules are copied from the template. |
@@ -63,7 +65,7 @@ If that image fails to start or fails `sing-box check`, pin the image and stop t
 image: ghcr.io/sagernet/sing-box:1.14.4
 ```
 
-Then run `docker compose up -d` again from `/opt/sing-box`. If key generation itself failed on `latest`, delete only this repo's generated `.env`, `config.json`, and `clash.yaml`, and rerun the four scripts with `SING_BOX_VERSION=1.14.4`. Do not edit the scripts.
+Then run `docker compose up -d` again from `/opt/sing-box`. If key generation itself failed on `latest`, delete only this repo's generated `.env`, `config.json`, and `clash.yaml`, and rerun `gen-keys.sh`, `gen-config.sh`, `conf-clash.sh`, and `start.sh` with `SING_BOX_VERSION=1.14.4`. Do not edit the scripts.
 
 ## Reality SNI
 
