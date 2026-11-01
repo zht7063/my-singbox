@@ -9,7 +9,9 @@
 - Shadowsocks 2022（`2022-blake3-aes-128-gcm`），端口 `8388`，TCP 和 UDP。
 - VLESS + REALITY，`flow` 为 `xtls-rprx-vision`，端口 `8443`，仅 TCP。服务端默认 SNI 为 `www.microsoft.com`。
 - 容器镜像 `ghcr.io/sagernet/sing-box:latest`，`network_mode: host`。
-- 客户端配置是 `clash.yaml`。默认节点 `My-sing-box`，可切换到 `My-VLESS-Reality`。
+- 客户端配置是 `clash.yaml`。节点为 `shadowsocks` 和 `vless-reality`，位于 `select` 组 `Proxy` 下（默认 `shadowsocks`）。
+
+> **从旧版本升级：** 节点原名 `My-sing-box`、`My-VLESS-Reality`，组原名 `PROXY`，现已改名。服务端端口和凭据不变，但已有的 `clash.yaml` 仍是旧名字。要使用新名字，请删除 `clash.yaml`，重新运行 `bash scripts/conf-clash.sh`，并在**每个客户端里重新导入 `clash.yaml`**（名字变了，客户端里保存的节点和分组选择会丢失）。
 
 `8388` 和 `8443` 需要空闲。端口写在 `templates/config.json.template` 和 `templates/clash.yaml.template`。`compose.yaml` 不映射端口。
 

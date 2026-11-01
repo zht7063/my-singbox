@@ -9,7 +9,9 @@ Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker
 - Shadowsocks 2022 (`2022-blake3-aes-128-gcm`), port `8388`, TCP and UDP.
 - VLESS + REALITY, with `flow` set to `xtls-rprx-vision`, port `8443`, TCP only. The server's default SNI is `www.microsoft.com`.
 - Container image `ghcr.io/sagernet/sing-box:latest`, with `network_mode: host`.
-- The client config is `clash.yaml`. The default node is `My-sing-box`; you can switch to `My-VLESS-Reality`.
+- The client config is `clash.yaml`. The nodes are `shadowsocks` and `vless-reality`, both in the `select` group `Proxy` (default: `shadowsocks`).
+
+> **Upgrading from an older version:** the nodes were previously named `My-sing-box` and `My-VLESS-Reality`, and the group `PROXY`. They were renamed. Server ports and credentials are unchanged, but an existing `clash.yaml` keeps the old names. To get the new names, delete `clash.yaml`, run `bash scripts/conf-clash.sh` again, and **re-import `clash.yaml` in every client** (a client's saved node and group selection is lost when names change).
 
 Ports `8388` and `8443` must be free. The ports are defined in `templates/config.json.template` and `templates/clash.yaml.template`. `compose.yaml` does not map ports.
 
