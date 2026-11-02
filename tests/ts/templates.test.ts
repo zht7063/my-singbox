@@ -4,7 +4,11 @@ import { it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { findTemplate, readTemplate } from '../../src/core/templates.js';
+import { findTemplate, readTemplate, findPackageFile } from '../../src/core/templates.js';
+it('finds package files by walking up', () => {
+  expect(findPackageFile('compose.yaml')).toBe(join(import.meta.dirname, '../../compose.yaml'));
+  expect(() => findPackageFile('missing')).toThrow('Package file does not exist: missing');
+});
 it('finds repository templates by walking up and falls back from an absent override', () => {
   expect(findTemplate('config.json.template')).toMatch(
     /templates\/config.json.template$/,

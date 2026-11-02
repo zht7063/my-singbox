@@ -4,6 +4,9 @@ import { genKeys } from './gen-keys.js';
 import { genConfig } from './gen-config.js';
 import { confClash } from './conf-clash.js';
 import { ispOutbound } from './isp-outbound.js';
+import { init } from './init.js';
+import { start } from './start.js';
+import type { StartDeps } from '../core/start.js';
 import type { CliDeps } from './deps.js';
 export type { CliDeps } from './deps.js';
 
@@ -17,6 +20,7 @@ export interface IO {
   readSecret?(prompt: string): Promise<string | null>;
   sleep?(ms: number): Promise<void>;
   deps?: Partial<CliDeps>;
+  start?: Partial<StartDeps>;
 }
 const commands = [
   'init',
@@ -96,9 +100,6 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
   if (cmd === 'gen-keys') return genKeys(io);
   if (cmd === 'gen-config') return genConfig(io);
   if (cmd === 'conf-clash') return confClash(io);
-  io.stderr(
-    `${cmd}: not implemented yet (planned for phase P2/P4; ` +
-      `use the shell script scripts/${cmd}.sh from v1.1.0 meanwhile)\n`,
-  );
-  return 2;
+  if (cmd === 'init') return init(io);
+  return start(io);
 }

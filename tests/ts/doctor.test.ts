@@ -161,14 +161,6 @@ describe('doctor', () => {
   });
 });
 describe('CLI', () => {
-  it.each(['init', 'start'])(
-    '%s stub and help',
-    async (cmd) => {
-      expect((await invoke([cmd])).code).toBe(2);
-      expect((await invoke([cmd])).stderr).toContain('not implemented yet');
-      expect((await invoke([cmd, '-h'])).code).toBe(0);
-    },
-  );
   it('isp-outbound help', async () => {
     expect((await invoke(['isp-outbound', '-h'])).code).toBe(0);
   });

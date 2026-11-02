@@ -85,6 +85,8 @@ jobs:
           test -f dist/cli.js && test -f dist/index.js
           node dist/cli.js doctor --help
           node tools/check-bundle.mjs
+      - name: Package file list has no .env and no tests (AC9)
+        run: node tools/check-pack.mjs
 
   license-scan:
     runs-on: ubuntu-latest
