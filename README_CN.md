@@ -22,7 +22,7 @@
 - UDP 检查需要 `ss`；没有时 `start` 会警告并跳过该检查。防火墙和安全组须放行 `8388/tcp`、`8388/udp`、`8443/tcp`。
 - 使用 Mihomo 内核的客户端，例如 Clash Verge、FlClash 或 Clash Meta。
 
-没有 Node >= 22 时，在仓库中运行 `bash install.sh`。它不使用 sudo，安装到 `~/.local/node`；请把 `~/.local/node/bin` 加入 `PATH`。默认版本使用内置校验值，其他版本使用官方 `SHASUMS256.txt` 校验压缩包，不匹配时终止。安装器需要 curl 和 SHA-256 工具。可选覆盖项为 `MY_SINGBOX_NODE_DIR`、`MY_SINGBOX_NODE_VERSION`、`MY_SINGBOX_NODE_MIRROR` 和 `MY_SINGBOX_FORCE_NODE_INSTALL=1`。
+没有 Node >= 22 时，在仓库中运行 `sh install.sh`。它不使用 sudo，安装到 `~/.local/node`；请把 `~/.local/node/bin` 加入 `PATH`。默认版本使用内置校验值，其他版本使用官方 `SHASUMS256.txt` 校验压缩包，不匹配时终止。安装器需要 curl 和 SHA-256 工具。可选覆盖项为 `MY_SINGBOX_NODE_DIR`、`MY_SINGBOX_NODE_VERSION`、`MY_SINGBOX_NODE_MIRROR` 和 `MY_SINGBOX_FORCE_NODE_INSTALL=1`。
 
 ## 快速开始
 

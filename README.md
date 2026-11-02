@@ -22,7 +22,7 @@ Ports `8388` and `8443` must be free. The ports are defined in `templates/config
 - `ss` for the UDP check; without it `start` warns and skips that check. Open `8388/tcp`, `8388/udp`, and `8443/tcp` in the firewall and security group.
 - A Mihomo-based client, such as Clash Verge, FlClash or Clash Meta.
 
-If Node >= 22 is missing, run `bash install.sh` from the repository. It uses no sudo and installs Node to `~/.local/node`; add `~/.local/node/bin` to `PATH`. It verifies the tarball against built-in pins for the default version or the official `SHASUMS256.txt` for other versions and aborts on mismatch. The bootstrap requires curl and a SHA-256 utility. Optional overrides are `MY_SINGBOX_NODE_DIR`, `MY_SINGBOX_NODE_VERSION`, `MY_SINGBOX_NODE_MIRROR` and `MY_SINGBOX_FORCE_NODE_INSTALL=1`.
+If Node >= 22 is missing, run `sh install.sh` from the repository. It uses no sudo and installs Node to `~/.local/node`; add `~/.local/node/bin` to `PATH`. It verifies the tarball against built-in pins for the default version or the official `SHASUMS256.txt` for other versions and aborts on mismatch. The bootstrap requires curl and a SHA-256 utility. Optional overrides are `MY_SINGBOX_NODE_DIR`, `MY_SINGBOX_NODE_VERSION`, `MY_SINGBOX_NODE_MIRROR` and `MY_SINGBOX_FORCE_NODE_INSTALL=1`.
 
 ## Quick start
 
