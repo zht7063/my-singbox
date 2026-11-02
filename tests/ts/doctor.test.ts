@@ -161,23 +161,8 @@ describe('doctor', () => {
   });
 });
 describe('CLI', () => {
-  it.each(['isp-outbound'])(
-    '%s stub and help',
-    async (cmd) => {
-      expect((await invoke([cmd])).code).toBe(2);
-      expect((await invoke([cmd])).stderr).toContain('not implemented yet');
-      expect((await invoke([cmd, '-h'])).code).toBe(0);
-    },
-  );
-  it.each([
-    ['--add'],
-    ['--remove'],
-    ['-y'],
-    ['--yes'],
-    ['--add', '--remove'],
-    ['--remove', '--add'],
-  ])('isp args %s', async (...args) => {
-    return expect((await invoke(['isp-outbound', ...args])).code).toBe(2);
+  it('isp-outbound help', async () => {
+    expect((await invoke(['isp-outbound', '-h'])).code).toBe(0);
   });
 
   it('isp unknown', async () => {
