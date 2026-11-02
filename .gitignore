@@ -4,3 +4,8 @@ clash.yaml
 .isp-backup/
 .isp.lock
 .isp-tmp.*
+node_modules/
+dist/
+coverage/
+*.tgz
+.npm-cache/

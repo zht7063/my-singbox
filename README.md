@@ -8,7 +8,7 @@ Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker
 
 - Shadowsocks 2022 (`2022-blake3-aes-128-gcm`), port `8388`, TCP and UDP.
 - VLESS + REALITY, with `flow` set to `xtls-rprx-vision`, port `8443`, TCP only. The server's default SNI is `www.microsoft.com`.
-- Container image `ghcr.io/sagernet/sing-box:latest`, with `network_mode: host`.
+- Container image `ghcr.io/sagernet/sing-box:v1.14.4` (pinned), with `network_mode: host`.
 - The client config is `clash.yaml`. The nodes are `shadowsocks` and `vless-reality`, both in the `select` group `Proxy` (default: `shadowsocks`).
 
 > **Upgrading from an older version:** the nodes were previously named `My-sing-box` and `My-VLESS-Reality`, and the group `PROXY`. They were renamed. Server ports and credentials are unchanged, but an existing `clash.yaml` keeps the old names. To get the new names, delete `clash.yaml`, run `bash scripts/conf-clash.sh` again, and **re-import `clash.yaml` in every client** (a client's saved node and group selection is lost when names change).
@@ -39,7 +39,7 @@ bash scripts/start.sh
 
 If `git` is not installed yet, run `sudo apt-get update && sudo apt-get install -y git` first, then clone. `init.sh` also installs `git` later on.
 
-`SING_BOX_VERSION` only decides which image `gen-keys.sh` uses to generate the keys. The running container always uses `ghcr.io/sagernet/sing-box:latest` from `compose.yaml`.
+`SING_BOX_VERSION` only decides which image `gen-keys.sh` uses to generate the keys. The running container always uses `ghcr.io/sagernet/sing-box:v1.14.4` from `compose.yaml`.
 
 | Script | Behavior | Output |
 | --- | --- | --- |
