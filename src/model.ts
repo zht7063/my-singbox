@@ -116,12 +116,17 @@ export function buildModel(
         : 'Invalid credentials in .env.',
     );
   }
-  const ss: SsCreds = { password: v.SS_PASSWORD ?? '' };
+  const {
+    SERVER_ADDRESS: server = '',
+    REALITY_PRIVATE_KEY: privateKey = '',
+    REALITY_PUBLIC_KEY: publicKey = '',
+  } = v;
+  const ss: SsCreds = { password: v.SS_PASSWORD! };
   const reality: RealityCreds = {
-    uuid: v.VLESS_UUID ?? '',
-    privateKey: v.REALITY_PRIVATE_KEY ?? '',
-    publicKey: v.REALITY_PUBLIC_KEY ?? '',
-    shortId: v.REALITY_SHORT_ID ?? '',
+    uuid: v.VLESS_UUID!,
+    privateKey,
+    publicKey,
+    shortId: v.REALITY_SHORT_ID!,
   };
   const node = (
     name: string,
@@ -137,35 +142,33 @@ export function buildModel(
     creds: protocol === 'shadowsocks' ? ss : reality,
   });
   const model: Model = {
-    server: v.SERVER_ADDRESS ?? '',
+    server,
     nodes: [
       node(NODE_SS, 'shadowsocks', SS_TAG, SS_PORT, 'direct'),
       node(NODE_VLESS, 'vless-reality', VLESS_TAG, VLESS_PORT, 'direct'),
     ],
   };
-  const ispKeys: EnvKey[] = [
-    'ISP_SOCKS_ADDR',
-    'ISP_SOCKS_USER',
-    'ISP_SOCKS_PASS',
-    'ISP_SOCKS_EGRESS_IP',
-  ];
-  if (!ispKeys.some((k) => !!v[k])) return model;
-  const fail = (key: EnvKey): never => {
-    throw new ModelError(`Invalid ${key}.`);
-  };
-  const addr = parseIspAddr(v.ISP_SOCKS_ADDR ?? '');
-  if (!addr) fail('ISP_SOCKS_ADDR');
-  const user = envUnquote(v.ISP_SOCKS_USER ?? ''),
-    pass = envUnquote(v.ISP_SOCKS_PASS ?? '');
+  const {
+    ISP_SOCKS_ADDR: rawAddr = '',
+    ISP_SOCKS_USER: rawUser = '',
+    ISP_SOCKS_PASS: rawPass = '',
+    ISP_SOCKS_EGRESS_IP: ip = '',
+  } = v;
+  if (!rawAddr && !rawUser && !rawPass && !ip) return model;
+  const addr = parseIspAddr(rawAddr);
+  if (!addr) throw new ModelError('Invalid ISP_SOCKS_ADDR.');
+  const user = envUnquote(rawUser),
+    pass = envUnquote(rawPass);
   if (user === null || !validCred(user) || user.includes(':'))
-    fail('ISP_SOCKS_USER');
-  if (pass === null || !validCred(pass)) fail('ISP_SOCKS_PASS');
-  const ip = v.ISP_SOCKS_EGRESS_IP;
-  if (ip && !isIpv4(ip) && !isIpv6Strict(ip)) fail('ISP_SOCKS_EGRESS_IP');
+    throw new ModelError('Invalid ISP_SOCKS_USER.');
+  if (pass === null || !validCred(pass))
+    throw new ModelError('Invalid ISP_SOCKS_PASS.');
+  if (ip && !isIpv4(ip) && !isIpv6Strict(ip))
+    throw new ModelError('Invalid ISP_SOCKS_EGRESS_IP.');
   model.isp = {
-    ...addr!,
-    user: user!,
-    pass: pass!,
+    ...addr,
+    user,
+    pass,
     ...(ip ? { egressIp: ip } : {}),
   };
   model.nodes.push(

@@ -103,8 +103,6 @@ export function validCred(value: string): boolean {
     Buffer.byteLength(value, 'utf8') >= 1 &&
     Buffer.byteLength(value, 'utf8') <= 255 &&
     !/[\x00-\x1f\x7f]/.test(value) &&
-    !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
-      value,
-    )
+    !value.includes('\uFFFD')
   );
 }

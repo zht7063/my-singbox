@@ -33,20 +33,27 @@ it('generates and validates credentials through injected commands', async () => 
   ]);
 });
 
-it('redacts malformed output and dependency errors', async () => {
+it('rejects malformed credentials without including their values', async () => {
   for (const patch of [
     { randomUuid: () => 'SECRET' },
     { randomShortId: () => 'SECRET' },
     { runSingbox: async () => 'SECRET' },
-    {
-      runSingbox: async () => {
-        throw Error('SECRET');
-      },
-    },
   ])
     await expect(generateKeys({ ...deps(), ...patch })).rejects.toThrow(
       /^Invalid generated credentials\.$/,
     );
+});
+
+it('propagates dependency errors unchanged', async () => {
+  const error = new Error('Docker command failed.');
+  await expect(
+    generateKeys({
+      ...deps(),
+      runSingbox: async () => {
+        throw error;
+      },
+    }),
+  ).rejects.toBe(error);
 });
 
 it('provides crypto defaults and injectable Docker probes', async () => {

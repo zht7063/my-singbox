@@ -43,7 +43,7 @@ it('keeps quoted scalar style', () => {
   ).toContain(`server: "${creds.serverAddress}"`);
 });
 
-it('rejects malformed YAML, unresolved placeholders, credential leaks and duplicate names safely', () => {
+it('rejects malformed YAML, unresolved placeholders, credential leaks safely', () => {
   const t = readTemplate('clash.yaml.template');
   expect(() => renderClash(fixtureModel(), 'a: [')).toThrow(
     'Invalid Clash template.',
@@ -54,10 +54,4 @@ it('rejects malformed YAML, unresolved placeholders, credential leaks and duplic
   expect(() =>
     renderClash(fixtureModel(), t + '\n# ' + creds.realityPrivateKey),
   ).toThrow('Refusing to write');
-  expect(() =>
-    renderClash(fixtureModel(), t.replace('${SS_PASSWORD}', 'removed')),
-  ).toThrow('Failed to place SS_PASSWORD');
-  const m = fixtureModel(true);
-  m.nodes[2].name = m.nodes[0].name;
-  expect(() => renderClash(m, t)).toThrow('Duplicate node');
 });

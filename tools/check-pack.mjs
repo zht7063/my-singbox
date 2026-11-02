@@ -8,6 +8,7 @@ export const whitelist = [
   'compose.yaml',
   'install.sh',
   'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
   'README.md',
   'README_CN.md',
 ];

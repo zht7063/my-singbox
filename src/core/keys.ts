@@ -17,39 +17,35 @@ export interface KeyDeps {
 }
 
 export async function generateKeys(deps: KeyDeps) {
-  try {
-    const vlessUuid = deps.randomUuid(),
-      realityShortId = deps.randomShortId();
-    const output = await deps.runSingbox(['generate', 'reality-keypair']);
-    const field = (name: string) =>
-      output
-        .split('\n')
-        .filter((l) => new RegExp(`^\\s*${name}:`).test(l))
-        .map((l) => l.split(/: */)[1])
-        .join('\n');
-    const realityPrivateKey = field('PrivateKey'),
-      realityPublicKey = field('PublicKey');
-    const ssPassword = (
-      await deps.runSingbox(['generate', 'rand', '--base64', '16'])
-    ).replace(/\n+$/, '');
-    if (
-      !UUID_RE.test(vlessUuid) ||
-      !PRIVATE_KEY_RE.test(realityPrivateKey) ||
-      !PUBLIC_KEY_RE.test(realityPublicKey) ||
-      !SHORT_ID_RE.test(realityShortId) ||
-      !SS_PASSWORD_RE.test(ssPassword)
-    )
-      throw Error();
-    return {
-      vlessUuid,
-      realityPrivateKey,
-      realityPublicKey,
-      realityShortId,
-      ssPassword,
-    };
-  } catch {
+  const vlessUuid = deps.randomUuid(),
+    realityShortId = deps.randomShortId();
+  const output = await deps.runSingbox(['generate', 'reality-keypair']);
+  const field = (name: string) =>
+    output
+      .split('\n')
+      .filter((l) => new RegExp(`^\\s*${name}:`).test(l))
+      .map((l) => l.split(/: */)[1])
+      .join('\n');
+  const realityPrivateKey = field('PrivateKey'),
+    realityPublicKey = field('PublicKey');
+  const ssPassword = (
+    await deps.runSingbox(['generate', 'rand', '--base64', '16'])
+  ).replace(/\n+$/, '');
+  if (
+    !UUID_RE.test(vlessUuid) ||
+    !PRIVATE_KEY_RE.test(realityPrivateKey) ||
+    !PUBLIC_KEY_RE.test(realityPublicKey) ||
+    !SHORT_ID_RE.test(realityShortId) ||
+    !SS_PASSWORD_RE.test(ssPassword)
+  )
     throw new Error('Invalid generated credentials.');
-  }
+  return {
+    vlessUuid,
+    realityPrivateKey,
+    realityPublicKey,
+    realityShortId,
+    ssPassword,
+  };
 }
 
 export type DockerRun = (file: string, args: string[]) => Promise<string>;
@@ -72,26 +68,19 @@ export function defaultKeyDeps(image: string): KeyDeps {
   };
 }
 
-export async function dockerAvailable(
-  run: DockerRun = execute,
-): Promise<boolean> {
-  try {
-    await run('docker', ['--version']);
-    return true;
-  } catch {
-    return false;
-  }
+async function dockerProbe(run: DockerRun, args: string[]): Promise<boolean> {
+  return run('docker', args).then(
+    () => true,
+    () => false,
+  );
 }
 
-export async function dockerDaemonUp(
-  run: DockerRun = execute,
-): Promise<boolean> {
-  try {
-    await run('docker', ['info']);
-    return true;
-  } catch {
-    return false;
-  }
+export function dockerAvailable(run: DockerRun = execute): Promise<boolean> {
+  return dockerProbe(run, ['--version']);
+}
+
+export function dockerDaemonUp(run: DockerRun = execute): Promise<boolean> {
+  return dockerProbe(run, ['info']);
 }
 
 export interface PublicIpDeps {
@@ -103,7 +92,7 @@ const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
       url,
       { family, headers: { 'User-Agent': 'my-singbox' } },
       (res) => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        if (res.statusCode! < 200 || res.statusCode! >= 300) {
           res.resume();
           reject(new Error('HTTP request failed.'));
           return;
@@ -112,8 +101,6 @@ const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
         res.setEncoding('utf8');
         res.on('data', (chunk: string) => {
           body += chunk;
-          if (body.length > 65536)
-            req.destroy(new Error('HTTP response too large.'));
         });
         res.on('end', () => resolve(body));
         res.on('error', () => reject(new Error('HTTP request failed.')));

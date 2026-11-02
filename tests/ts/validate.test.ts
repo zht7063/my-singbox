@@ -73,9 +73,16 @@ it('parses only IP ISP hosts and normalizes ports', () => {
     expect(v.parseIspAddr(s)).toBeNull();
 });
 
-it('counts credentials in bytes and rejects controls and lone surrogates', () => {
+it('counts credentials in bytes and rejects controls and invalid UTF-8 replacements', () => {
   expect(v.validCred('雪😀')).toBe(true);
   expect(v.validCred('a'.repeat(255))).toBe(true);
-  for (const s of ['', '雪'.repeat(86), 'a\x7f', 'a\n', '\ud800', '\udc00'])
+  for (const s of [
+    '',
+    '雪'.repeat(86),
+    'a\x7f',
+    'a\n',
+    'a\uFFFDb',
+    Buffer.from([0xff]).toString('utf8'),
+  ])
     expect(v.validCred(s)).toBe(false);
 });

@@ -1,16 +1,13 @@
-import { parseDocument, visit, isScalar, isSeq, isMap } from 'yaml';
+import { parseDocument, visit, isScalar, isSeq, isMap, type YAMLMap } from 'yaml';
 import type { Model, RealityCreds, SsCreds } from '../model.js';
 
 export function renderClash(model: Model, templateText: string): string {
   const doc = parseDocument(templateText);
   if (doc.errors.length) throw new Error('Invalid Clash template.');
-  const ss = model.nodes.find((n) => n.protocol === 'shadowsocks')?.creds as
-    | SsCreds
-    | undefined;
-  const r = model.nodes.find((n) => n.protocol === 'vless-reality')?.creds as
-    | RealityCreds
-    | undefined;
-  if (!ss || !r) throw new Error('Missing base nodes.');
+  const ss = model.nodes.find((n) => n.protocol === 'shadowsocks')!
+    .creds as SsCreds;
+  const r = model.nodes.find((n) => n.protocol === 'vless-reality')!
+    .creds as RealityCreds;
   const values: Record<string, string> = {
     SERVER_ADDRESS: model.server,
     VLESS_UUID: r.uuid,
@@ -31,7 +28,7 @@ export function renderClash(model: Model, templateText: string): string {
     groups = doc.get('proxy-groups', true);
   if (!isSeq(proxies) || !isSeq(groups))
     throw new Error('Missing Clash proxies or groups.');
-  const prototypes = new Map<string, (typeof proxies.items)[number]>();
+  const prototypes = new Map<string, YAMLMap>();
   for (const protocol of ['shadowsocks', 'vless-reality']) {
     const proto = proxies.items.find(
       (p) =>
@@ -43,8 +40,7 @@ export function renderClash(model: Model, templateText: string): string {
     prototypes.set(protocol, proto);
   }
   proxies.items = model.nodes.map((n) => {
-    const proto = prototypes.get(n.protocol);
-    if (!isMap(proto)) throw new Error('Missing Clash proxy prototype.');
+    const proto = prototypes.get(n.protocol)!;
     if (n.egress === 'direct') return proto;
     const clone = proto.clone();
     clone.set('name', n.name);
@@ -57,22 +53,10 @@ export function renderClash(model: Model, templateText: string): string {
   for (const n of model.nodes)
     if (!list.items.some((x) => (isScalar(x) ? x.value : x) === n.name))
       list.add(n.name);
-  const names = model.nodes.map((n) => n.name);
-  if (new Set(names).size !== names.length)
-    throw new Error('Duplicate node names.');
   const text = doc.toString({ lineWidth: 0 }).replace(/\n*$/, '\n');
   if (text.includes('${'))
     throw new Error('Unresolved placeholder left in clash.yaml.');
   if (r.privateKey && text.includes(r.privateKey))
     throw new Error('Refusing to write REALITY_PRIVATE_KEY into clash.yaml.');
-  const landed = new Set<string>();
-  visit(doc, {
-    Scalar(_k, s) {
-      if (typeof s.value === 'string') landed.add(s.value);
-    },
-  });
-  for (const [key, value] of Object.entries(values))
-    if (!value || !landed.has(value))
-      throw new Error(`Failed to place ${key} into clash.yaml.`);
   return text;
 }

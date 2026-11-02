@@ -26,15 +26,18 @@ it('uses exact escaping and leaves unwrapped text raw', () => {
     expect(e.envUnquote(s)).toBeNull();
 });
 
-it('parses CRLF, comments, raw base values and decoded ISP values', () => {
+it('parses CRLF and comments while keeping all values raw', () => {
   const env = e.parseEnv(
     ' # comment\r\n\t\r\nSERVER_ADDRESS="raw"\r\nISP_SOCKS_USER="a$$"\nISP_SOCKS_PASS="$"',
   );
-  expect(e.getEnv(env, 'SERVER_ADDRESS')).toBe('"raw"');
-  expect(env.ispUser).toBe('a$');
-  expect(env.values.ISP_SOCKS_USER).toBe('"a$$"');
-  expect(env.ispPass).toBeUndefined();
-  expect(env.malformed).toEqual(['ISP_SOCKS_PASS']);
+  expect(env).toEqual({
+    values: {
+      SERVER_ADDRESS: '"raw"',
+      ISP_SOCKS_USER: '"a$$"',
+      ISP_SOCKS_PASS: '"$"',
+    },
+    keys: new Set(['SERVER_ADDRESS', 'ISP_SOCKS_USER', 'ISP_SOCKS_PASS']),
+  });
 });
 
 it('reports line numbers and keys without values', () => {
@@ -84,13 +87,14 @@ it('loads files, writes mode 0600 under both umasks, and never clobbers', () => 
       expect(statSync(path).mode & 0o777).toBe(0o600);
       expect(e.loadEnvFile(path).values.VLESS_UUID).toBe(creds.vlessUuid);
       expect(() => e.writeEnvFile(path, 'bad')).toThrow(e.FileExistsError);
-      e.writeFileAtomic(path, 'SS_PASSWORD=new\n', { mode: 0o777 });
+      expect(readFileSync(path, 'utf8')).toBe(e.renderGeneratedEnv(creds));
+      e.writeFileAtomic(path, 'SS_PASSWORD=new\n');
       expect(readFileSync(path, 'utf8')).toBe('SS_PASSWORD=new\n');
       expect(statSync(path).mode & 0o777).toBe(0o600);
     }
     expect(readdirSync(dir).filter((x) => x.includes('.tmp.'))).toEqual([]);
     expect(() => e.loadEnvFile(join(dir, 'missing'))).toThrow(
-      '.env does not exist. Run scripts/gen-keys.sh first.',
+      expect.objectContaining({ code: 'ENOENT' }),
     );
     expect(() => e.writeFileAtomic(join(dir, 'absent', 'file'), 'x')).toThrow();
   } finally {
@@ -116,28 +120,23 @@ it('keeps embedded carriage returns and Unicode separators raw', () => {
 });
 
 it.each(['EPERM', 'ENOTSUP', 'EXDEV'])(
-  'uses exclusive fallback on %s and cleans up on collision',
+  'propagates unsupported link error %s and cleans up',
   (code) => {
-    const dir = mkdtempSync(join(tmpdir(), 'p2-fallback-'));
+    const dir = mkdtempSync(join(tmpdir(), 'p2-link-'));
     try {
       const path = join(dir, '.env');
-      vi.mocked(linkSync).mockImplementation(() => {
-        throw Object.assign(new Error('Unsupported link.'), { code });
+      const error = Object.assign(new Error('Unsupported link.'), { code });
+      vi.mocked(linkSync).mockImplementationOnce(() => {
+        throw error;
       });
-      e.writeEnvFile(path, 'original');
-      expect(readFileSync(path, 'utf8')).toBe('original');
-      expect(statSync(path).mode & 0o777).toBe(0o600);
-      expect(() => e.writeEnvFile(path, 'replacement')).toThrow(
-        e.FileExistsError,
-      );
-      expect(readFileSync(path, 'utf8')).toBe('original');
-      expect(readdirSync(dir)).toEqual(['.env']);
+      expect(() => e.writeEnvFile(path, 'data')).toThrow(error);
+      expect(readdirSync(dir)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   },
 );
-it('cleans temp files on write, rename and link failures and partial fallback writes', () => {
+it('cleans temp files on write, rename and link failures', () => {
   const dir = mkdtempSync(join(tmpdir(), 'p2-failure-'));
   const path = join(dir, '.env');
   const fail = () => {
@@ -151,15 +150,6 @@ it('cleans temp files on write, rename and link failures and partial fallback wr
     expect(() => e.writeFileAtomic(path, 'data')).toThrow('Write failed.');
     expect(readdirSync(dir)).toEqual([]);
     vi.mocked(linkSync).mockImplementationOnce(fail);
-    expect(() => e.writeEnvFile(path, 'data')).toThrow('Write failed.');
-    expect(readdirSync(dir)).toEqual([]);
-    vi.mocked(linkSync).mockImplementationOnce(() => {
-      throw Object.assign(new Error('Unsupported link.'), { code: 'EPERM' });
-    });
-    const actual = vi.mocked(writeFileSync).getMockImplementation()!;
-    vi.mocked(writeFileSync)
-      .mockImplementationOnce(actual)
-      .mockImplementationOnce(fail);
     expect(() => e.writeEnvFile(path, 'data')).toThrow('Write failed.');
     expect(readdirSync(dir)).toEqual([]);
   } finally {

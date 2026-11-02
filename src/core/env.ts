@@ -6,7 +6,7 @@ import {
   fchmodSync,
   closeSync,
   linkSync,
-  unlinkSync,
+  rmSync,
   renameSync,
 } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
@@ -31,10 +31,6 @@ export type EnvKey = (typeof ENV_KEYS)[number];
 export interface Env {
   values: Partial<Record<EnvKey, string>>;
   keys: Set<EnvKey>;
-  raw?: Partial<Record<EnvKey, string>>;
-  ispUser?: string;
-  ispPass?: string;
-  malformed?: EnvKey[];
 }
 
 export class EnvError extends Error {
@@ -79,8 +75,7 @@ export function envUnquote(raw: string): string | null {
 }
 
 export function parseEnv(text: string, label = '.env'): Env {
-  const env: Env = { values: {}, keys: new Set(), malformed: [] };
-  env.raw = env.values;
+  const env: Env = { values: {}, keys: new Set() };
   text.split('\n').forEach((line, i) => {
     line = line.replace(/\r$/, '');
     if (/^\s*(#|$)/.test(line)) return;
@@ -93,30 +88,12 @@ export function parseEnv(text: string, label = '.env'): Env {
       throw new EnvError(`Duplicate key in ${label}: ${key}`);
     env.keys.add(key);
     env.values[key] = m[2];
-    if (key === 'ISP_SOCKS_USER' || key === 'ISP_SOCKS_PASS') {
-      const v = envUnquote(m[2]);
-      if (v === null) env.malformed!.push(key);
-      else if (key === 'ISP_SOCKS_USER') env.ispUser = v;
-      else env.ispPass = v;
-    }
   });
   return env;
 }
 
-export function getEnv(env: Env, key: EnvKey): string | undefined {
-  return env.values[key];
-}
-
 export function loadEnvFile(path: string): Env {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT')
-      throw new EnvError('.env does not exist. Run scripts/gen-keys.sh first.');
-    throw e;
-  }
-  return parseEnv(text);
+  return parseEnv(readFileSync(path, 'utf8'));
 }
 
 export const ENV_HEADER = '# ISP outbound (managed by scripts/isp-outbound.sh)';
@@ -175,60 +152,33 @@ export function renderGeneratedEnv(v: {
 export function writeFileAtomic(
   path: string,
   data: string | Uint8Array,
-  options: { mode?: number; exclusive?: boolean } = {},
+  options: { exclusive?: boolean } = {},
 ): void {
   const tempBase = basename(path) === '.env' ? '.env' : `.${basename(path)}`;
   const tmp = join(
     dirname(path),
     `${tempBase}.tmp.${randomBytes(12).toString('hex')}`,
   );
-  let fd: number | undefined;
-  let created = false;
-  const write = (f: number) => {
-    writeFileSync(f, data);
-    fsyncSync(f);
-    fchmodSync(f, 0o600);
-  };
+  const fd = openSync(tmp, 'wx', 0o600);
   try {
-    fd = openSync(tmp, 'wx', 0o600);
-    created = true;
-    write(fd);
-    closeSync(fd);
-    fd = undefined;
+    try {
+      writeFileSync(fd, data);
+      fsyncSync(fd);
+      fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
     if (options.exclusive) {
       try {
         linkSync(tmp, path);
       } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code === 'EEXIST') throw new FileExistsError();
-        if (!['EPERM', 'ENOTSUP', 'EXDEV'].includes(code ?? '')) throw e;
-        let dest: number;
-        try {
-          dest = openSync(path, 'wx', 0o600);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'EEXIST')
-            throw new FileExistsError();
-          throw err;
-        }
-        try {
-          write(dest);
-        } catch (err) {
-          try {
-            unlinkSync(path);
-          } catch {}
-          throw err;
-        } finally {
-          closeSync(dest);
-        }
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST')
+          throw new FileExistsError();
+        throw e;
       }
     } else renameSync(tmp, path);
   } finally {
-    if (fd !== undefined) closeSync(fd);
-    try {
-      if (created) unlinkSync(tmp);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-    }
+    rmSync(tmp, { force: true });
   }
 }
 

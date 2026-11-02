@@ -51,7 +51,7 @@ it('appends ISP nodes, outbound, and rule in shell order', () => {
   ]);
 });
 
-it('rejects unresolved placeholders, bad prototypes and missing credential placement', () => {
+it('rejects unresolved placeholders and bad prototype tags or ports', () => {
   const t = loadSingboxTemplate() as {
     inbounds: Record<string, unknown>[];
     other?: string;
@@ -64,6 +64,6 @@ it('rejects unresolved placeholders, bad prototypes and missing credential place
   t.inbounds[0].tag = 'bad';
   expect(() => renderSingbox(fixtureModel(), t)).toThrow('prototype');
   t.inbounds[0].tag = 'ss-in';
-  t.inbounds[0].password = 'removed';
-  expect(() => renderSingbox(fixtureModel(), t)).toThrow('Failed to place');
+  t.inbounds[0].listen_port = 1;
+  expect(() => renderSingbox(fixtureModel(), t)).toThrow('prototype');
 });
