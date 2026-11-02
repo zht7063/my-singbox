@@ -29,7 +29,7 @@
 没有 Node >= 22 时先安装（不用 sudo）：
 
 ```bash
-curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/main/install.sh
+curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
 sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
 ```
 
