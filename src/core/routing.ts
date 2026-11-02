@@ -1,4 +1,4 @@
-import { OUT_TAG, type IspSocks } from '../model.js';
+import { OUT_TAG, SS_ISP_TAG, VLESS_ISP_TAG, type IspSocks } from '../model.js';
 import type { SingboxConfig } from './render-config.js';
 
 export type RoutePolicy = NonNullable<SingboxConfig['route']>;
@@ -9,6 +9,16 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isIspRule(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && value.outbound === OUT_TAG;
+}
+
+/** The old generated rule selected only the dedicated ISP listener tags. */
+export function isLegacyIspRule(value: unknown): boolean {
+  if (!isIspRule(value)) return false;
+  const inbound = typeof value.inbound === 'string' ? [value.inbound] : value.inbound;
+  return Array.isArray(inbound) && inbound.length > 0 &&
+    inbound.every((tag) => tag === SS_ISP_TAG || tag === VLESS_ISP_TAG) &&
+    (value.action === undefined || value.action === 'route') &&
+    Object.keys(value).every((key) => ['inbound', 'outbound', 'action'].includes(key));
 }
 
 /** Fail rather than silently changing references outside optional top-level rules. */

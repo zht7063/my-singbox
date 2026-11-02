@@ -5,18 +5,18 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { createConnection, Socket } from 'node:net';
-import { parse, stringify } from 'yaml';
+import { parse } from 'yaml';
 import {
   IspError, ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, MANAGED_FILES, GROUP_MAIN,
-  envGet, envHasIsp, checkIspConfig, configHasIsp, clashHasIsp,
-  addIspToConfig, removeIspFromConfig, addIspToClash, makeTmpPath, installFile, makeBackup,
-  findCleanBackup, restoreBackup, sweepStaleTmp, withLock, IspService,
+  envGet, envHasIsp, checkIspConfig, configHasIsp,
+  addIspToConfig, removeIspFromConfig, makeTmpPath, installFile, makeBackup,
+  restoreBackup, sweepStaleTmp, withLock, IspService,
 } from '../../src/index.js';
 import { ENV_HEADER, ENV_HEADER_NOEOL, envWithIsp, parseEnv } from '../../src/core/env.js';
 import { buildModel, type IspSocks } from '../../src/model.js';
 import { loadSingboxTemplate, renderSingbox, type SingboxConfig } from '../../src/core/render-config.js';
 import { renderClash } from '../../src/core/render-clash.js';
-import { creds, fixtureModel, fixtureText, isp } from './helpers/fixtures.js';
+import { fixtureModel, fixtureText, isp } from './helpers/fixtures.js';
 import { project, read, root } from './helpers/cli.js';
 import { setupIsp, address, username, password } from './helpers/isp.js';
 
@@ -56,11 +56,6 @@ it('AC2 ISP detectors recognize partial state and legacy markers without false p
   for (const tag of ['ss-isp-in', 'vless-reality-isp-in', 'isp-socks'])
     expect(configHasIsp({ inbounds: [{ tag }] })).toBe(true);
   expect(configHasIsp({ inbounds: [], outbounds: [{ tag: 'isp-socks' }] })).toBe(true);
-  expect(clashHasIsp(baseClash())).toBe(false);
-  expect(clashHasIsp('proxies: []\n# BEGIN my-singbox-isp\n')).toBe(true);
-  expect(clashHasIsp('proxies:\n  - name: shadowsocks-isp\n')).toBe(true);
-  expect(clashHasIsp('proxies:\n  - name: vless-reality-isp\n')).toBe(true);
-  expect(clashHasIsp('rules: [MATCH,DIRECT]\n')).toBe(false);
 });
 
 it('AC2 checkIspConfig refuses invalid shapes and missing prototypes but permits unrelated legacy-port users', () => {
@@ -113,23 +108,6 @@ it('AC2 addIspToConfig creates missing outbounds and route.rules containers', ()
   }
 });
 
-it('AC2 AC4 AC17 deprecated addIspToClash validates and returns bytes unchanged', () => {
-  const doc = parse(baseClash());
-  doc.proxies.push({ name: 'custom', type: 'socks5', server: '192.0.2.9', port: 1000 });
-  doc.rules.unshift('DOMAIN,custom.test,DIRECT');
-  const text = '# custom header\n' + stringify(doc).trimEnd();
-  expect(addIspToClash(text)).toBe(text);
-  expect(addIspToClash(addIspToClash(text))).toBe(text);
-  expect(parse(text).proxies).toHaveLength(3);
-});
-
-it('AC2 deprecated addIspToClash preserves legacy nodes without creating or repairing them', () => {
-  const doc = parse(baseClash());
-  doc.proxies.push({ ...doc.proxies[0], name: 'shadowsocks-isp', port: 99, custom: true });
-  const text = '# legacy client requires explicit regeneration\n' + stringify(doc);
-  expect(addIspToClash(text)).toBe(text);
-});
-
 it.each(['duplicate', 'wrong type'])('AC2 outbound upsert rejects reserved tag conflicts without mutating input: %s', (kind) => {
   const config = addIspToConfig(baseConfig(), socks);
   if (kind === 'duplicate') config.outbounds!.push({ ...config.outbounds![1] });
@@ -151,21 +129,12 @@ it('AC2 route defaults append only ISP rules after existing rules and are deeply
   expect(addIspToConfig(config, socks).route!.rules).toEqual([{ action: 'sniff' }, ...config.route.rules!]);
 });
 
-it('AC2 AC9 deprecated addIspToClash refuses invalid YAML and private keys without requiring node prototypes', () => {
-  expect(() => addIspToClash('proxies: [')).toThrow('not valid YAML');
-  for (const text of ['proxies: []\n', 'rules: [MATCH,DIRECT]\n']) expect(addIspToClash(text)).toBe(text);
-  for (const key of ['REALITY_PRIVATE_KEY', creds.realityPrivateKey]) {
-    expect(() => addIspToClash(baseClash() + `# ${key}\n`, creds.realityPrivateKey)).toThrow('Refusing to write REALITY_PRIVATE_KEY');
-    expect(() => addIspToClash(addIspToClash(baseClash()) + `# ${key}\n`, creds.realityPrivateKey)).toThrow('Refusing to write REALITY_PRIVATE_KEY');
-  }
-});
-
 it('AC1 AC2 AC4 fresh ISP rendering and incremental additions are semantically equal including array order', () => {
   const model = buildModel(parseEnv(envWithIsp(fixtureText(), isp)));
   const direct = fixtureModel(), template = loadSingboxTemplate(root), clashTemplate = read(root, 'templates/clash.yaml.template');
   expect(canonical(addIspToConfig(renderSingbox(direct, template), model.isp!, template.route)))
     .toBe(canonical(renderSingbox(model, template)));
-  expect(parse(addIspToClash(renderClash(direct, clashTemplate))))
+  expect(parse(renderClash(direct, clashTemplate)))
     .toEqual(parse(renderClash(model, clashTemplate)));
 });
 
@@ -199,32 +168,25 @@ it('AC2 AC7 backup stamps are sortable and unique within one millisecond; retent
   expect(read(created[0], '.env') === fixtureText()).toBe(true);
 });
 
-it('AC2 AC7 findCleanBackup chooses newest clean bytes, rejecting ISP in any file and invalid JSON', () => {
-  const dir = project(); expect(findCleanBackup(dir)).toBeUndefined();
-  writeConfig(dir, baseConfig()); writeFileSync(join(dir, 'clash.yaml'), baseClash());
-  const first = makeBackup(dir);
-  writeFileSync(join(dir, '.env'), fixtureText() + '# newest clean\n'); const newest = makeBackup(dir);
-  const variants = [
-    { file: '.env', text: 'ISP_SOCKS_USER=\n' },
-    { file: 'config.json', text: JSON.stringify(addIspToConfig(baseConfig(), socks)) },
-    { file: 'config.json', text: '{invalid' },
-  ];
-  // Remove each dirty candidate after inspection so retention cannot remove newest.
-  for (const { file, text } of variants) {
-    writeFileSync(join(dir, file), text); const dirty = makeBackup(dir);
-    expect(findCleanBackup(dir)).toBe(newest); rmSync(dirty, { recursive: true }); restoreBackup(dir, newest);
-  }
-  rmSync(newest, { recursive: true }); expect(findCleanBackup(dir)).toBe(first);
+it('AC2 AC7 makeBackup repairs permissions on an existing backup root before saving secrets', () => {
+  const dir = project(); writeConfig(dir, baseConfig());
+  const backupRoot = join(dir, ISP_BACKUP_DIR); mkdirSync(backupRoot, { mode: 0o755 });
+  chmodSync(backupRoot, 0o755);
+  const backup = makeBackup(dir);
+  expect(mode(backupRoot)).toBe(0o700); expect(mode(backup)).toBe(0o700);
+  for (const name of MANAGED_FILES) expect(read(backup, name)).toBe(read(dir, name));
 });
 
-it('AC2 AC7 backups restore original absence of managed files while ignoring Clash even in old backups', () => {
-  const dir = project(), backup = makeBackup(dir);
-  writeFileSync(join(dir, 'config.json'), 'new-config');
+it('AC2 AC7 restoreBackup copies available snapshots and leaves other current files untouched', () => {
+  const dir = project(); writeConfig(dir, baseConfig());
+  const backup = makeBackup(dir);
+  rmSync(join(backup, 'config.json'));
+  writeFileSync(join(dir, 'config.json'), 'keep-current-config');
   writeFileSync(join(dir, 'clash.yaml'), 'keep-current-clash');
   writeFileSync(join(backup, 'clash.yaml'), 'historical-client-bytes');
   writeFileSync(join(dir, '.env'), 'modified'); restoreBackup(dir, backup);
   expect(read(dir, '.env') === fixtureText()).toBe(true);
-  expect(existsSync(join(dir, 'config.json'))).toBe(false);
+  expect(read(dir, 'config.json')).toBe('keep-current-config');
   expect(read(dir, 'clash.yaml')).toBe('keep-current-clash');
 });
 
@@ -334,14 +296,13 @@ it('AC2 IspService waits exactly fifteen injected sleeps for missing TCP or UDP 
   const { h, service, sleep, output } = await serviceFixture();
   h.set('listeners', ''); expect(await service.waitListening('tcp', 8388)).toBe(false);
   expect(sleep).toHaveBeenCalledTimes(15); expect(sleep).toHaveBeenCalledWith(1000);
-  sleep.mockClear(); expect(await service.verifyService(false)).toBe(false);
+  sleep.mockClear(); expect(await service.verifyService()).toBe(false);
   expect(output().stderr).toContain('Port 8388/tcp is not listening');
   h.set('listeners', 'tcp 8388\ntcp 8443\n'); sleep.mockClear();
-  expect(await service.verifyService(true)).toBe(false); expect(sleep).toHaveBeenCalledTimes(15);
+  expect(await service.verifyService()).toBe(false); expect(sleep).toHaveBeenCalledTimes(15);
   expect(output().stderr).toContain('Port 8388/udp is not listening');
   h.set('listeners', 'tcp 8388\nudp 8388\ntcp 8443\n'); sleep.mockClear();
-  expect(await service.verifyService(true)).toBe(true);
-  expect(await service.verifyService(false)).toBe(true);
+  expect(await service.verifyService()).toBe(true);
   expect(sleep).not.toHaveBeenCalled();
 });
 
@@ -388,9 +349,9 @@ it('AC2 IspService verifies actual configured ports including Shadowsocks UDP', 
   const { h, service } = await serviceFixture();
   const config = h.config(); config.inbounds[0].listen_port = 9001; config.inbounds[1].listen_port = 9002;
   writeConfig(h.dir, config); h.set('listeners', 'tcp 9001\nudp 9001\ntcp 9002\n');
-  expect(await service.verifyService(true)).toBe(true);
+  expect(await service.verifyService()).toBe(true);
   h.set('listeners', 'tcp 9001\ntcp 9002\n');
-  expect(await service.verifyService(false)).toBe(false);
+  expect(await service.verifyService()).toBe(false);
 });
 
 it('AC2 IspService egress retries invalid responses and sends quoted credentials only over stdin', async () => {
@@ -406,6 +367,6 @@ it('AC2 IspService abort interrupts an injected polling sleep without waiting', 
   const reason = new Error('fixture interruption');
   const service = new IspService({ projectDir: h.dir, env: h.env, signal: controller.signal,
     sleep: async () => { controller.abort(reason); }, stdout: () => {}, stderr: () => {} });
-  await expect(service.verifyService(true)).rejects.toBe(reason);
+  await expect(service.verifyService()).rejects.toBe(reason);
   await expect(service.containerStatus()).rejects.toBe(reason); expect(output()).toEqual({ stdout: '', stderr: '' });
 });

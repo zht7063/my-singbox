@@ -5,14 +5,13 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { parseDocument, isMap, isSeq } from 'yaml';
 import {
   type IspSocks, SS_TAG, VLESS_TAG, SS_ISP_TAG, VLESS_ISP_TAG, OUT_TAG,
-  SS_ISP_PORT, VLESS_ISP_PORT, NODE_SS_ISP, NODE_VLESS_ISP,
+  SS_ISP_PORT, VLESS_ISP_PORT,
 } from '../model.js';
 import type { SingboxConfig } from './render-config.js';
 import { ENV_HEADER, ENV_HEADER_NOEOL } from './env.js';
-import { ensureRoute, isRecord, omitIsp, upsertIspOutbound, type RoutePolicy } from './routing.js';
+import { ensureRoute, isLegacyIspRule, isRecord, omitIsp, upsertIspOutbound, type RoutePolicy } from './routing.js';
 
 export const ISP_BACKUP_DIR = '.isp-backup', ISP_LOCK_FILE = '.isp.lock',
   ISP_TMP_PREFIX = '.isp-tmp.', GROUP_MAIN = 'Proxy';
@@ -72,8 +71,7 @@ function withoutLegacyListeners(config: SingboxConfig): SingboxConfig {
     if (!Array.isArray(inbound) || !inbound.some((tag) => tags.has(tag))) return [rule];
     const remaining = inbound.filter((tag) => !tags.has(tag));
     if (remaining.length) return [{ ...rule, inbound: remaining }];
-    if (rule.outbound === OUT_TAG && (rule.action === undefined || rule.action === 'route') &&
-        Object.keys(rule).every((key) => ['inbound', 'outbound', 'action'].includes(key))) return [];
+    if (isLegacyIspRule(rule)) return [];
     throw new IspError('A custom route depends on legacy ISP inbounds. Migrate it manually first.');
   });
   const check = (value: unknown, key = ''): void => {
@@ -101,23 +99,6 @@ export function removeIspFromConfig(config: SingboxConfig): SingboxConfig {
   const next = withoutLegacyListeners(config);
   omitIsp(next);
   return next;
-}
-
-/** @deprecated Client ISP nodes are a legacy concept; used only to identify old files. */
-export function clashHasIsp(text: string): boolean {
-  if (/^\s*#.*\bmy-singbox-isp\b/m.test(text)) return true;
-  const proxies = parseDocument(text).get('proxies', true);
-  return isSeq(proxies) && proxies.items.some((p) => isMap(p) &&
-    [NODE_SS_ISP, NODE_VLESS_ISP].includes(p.get('name') as string));
-}
-
-/** @deprecated ISP routing belongs to the server. Returns the client config unchanged. */
-export function addIspToClash(text: string, realityPrivateKey?: string): string {
-  if (parseDocument(text).errors.length) throw new IspError('clash.yaml is not valid YAML.');
-  if (text.includes('REALITY_PRIVATE_KEY') ||
-      (realityPrivateKey && text.includes(realityPrivateKey)))
-    throw new IspError('Refusing to write REALITY_PRIVATE_KEY into clash.yaml.');
-  return text;
 }
 
 export function makeTmpPath(projectDir: string): string {
@@ -164,41 +145,23 @@ export function makeBackup(projectDir: string, files: readonly ManagedFile[] = M
     `${(lastStamp % 1_000_000_000n).toString().padStart(9, '0')}-${process.pid}`;
   const root = join(projectDir, ISP_BACKUP_DIR), dir = join(root, stamp);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
   mkdirSync(dir, { mode: 0o700 });
-  const present: Partial<Record<ManagedFile, boolean>> = {};
   for (const file of files) {
     const src = join(projectDir, file);
-    present[file] = existsSync(src) && statSync(src).isFile();
-    if (present[file]) copyPreserved(src, join(dir, file));
+    if (existsSync(src) && statSync(src).isFile()) copyPreserved(src, join(dir, file));
   }
-  writeFileSync(join(dir, '.files.json'), JSON.stringify(present), { flag: 'wx', mode: 0o600 });
   const all = backupDirs(projectDir);
   for (const old of all.slice(1, Math.max(1, all.length - 4))) rmSync(old, { recursive: true });
   return dir;
 }
 
-/** @deprecated Normal ISP removal operates on current files, not historical snapshots. */
-export function findCleanBackup(projectDir: string): string | undefined {
-  return backupDirs(projectDir).reverse().find((dir) => MANAGED_FILES.every((file) => {
-    const path = join(dir, file);
-    if (!existsSync(path)) return true;
-    const text = readFileSync(path, 'utf8');
-    if (file === '.env') return !envHasIsp(text);
-    try { return !configHasIsp(JSON.parse(text)); }
-    catch { return false; }
-  }));
-}
-
 export function restoreBackup(
   projectDir: string, backupDir: string, files: readonly ManagedFile[] = MANAGED_FILES,
 ): void {
-  const manifest = join(backupDir, '.files.json');
-  const present: Partial<Record<ManagedFile, boolean>> = existsSync(manifest)
-    ? JSON.parse(readFileSync(manifest, 'utf8')) : {};
   for (const file of files) {
     const src = join(backupDir, file), dest = join(projectDir, file);
     if (existsSync(src) && statSync(src).isFile()) copyPreserved(src, dest);
-    else if (present[file] === false) rmSync(dest, { force: true });
   }
 }
 

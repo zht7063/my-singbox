@@ -34,7 +34,7 @@ When the current config has no ISP rules, the command copies the optional ISP ru
 
 Add and remove manage only `config.json` and `.env`. They never read or write `clash.yaml`, including during backup, failure rollback, or recovery from an older backup that contains a client file. A missing or unwritable `clash.yaml` does not block the command. No client re-import is needed for ordinary ISP changes to a configuration that already uses the two base nodes.
 
-Library callers use `addIspToConfig(config, isp, routeDefaults?)`. Pass `loadSingboxTemplate(projectDir).route` as `routeDefaults` when the current config has no ISP rules and should receive the template policy. The defaults are not a replacement for existing ISP rules. The deprecated `addIspToClash` helper returns its input unchanged; new integrations should omit it.
+Library callers use `addIspToConfig(config, isp, routeDefaults?)`. Pass `loadSingboxTemplate(projectDir).route` as `routeDefaults` when the current config has no ISP rules and should receive the template policy. The defaults are not a replacement for existing ISP rules. Version 3 removes `Node.egress`, `addIspToClash`, `clashHasIsp`, `findCleanBackup`, and `IspService.portsFree`; `IspService.verifyService()` takes no arguments. See the [3.0.0 breaking changes](../../CHANGELOG.md).
 
 ## Remove and rollback
 
@@ -42,7 +42,7 @@ Library callers use `addIspToConfig(config, isp, routeDefaults?)`. Pass `loadSin
 
 Backups in `.isp-backup` support transaction rollback, rather than serving as the source of a normal removal. The backup root and directories use mode 700. Retention keeps the oldest backup and the four newest; a no-op creates no backup. Protect `.env`, server configuration, and backups because they contain secrets.
 
-The command validates the candidate configuration and verifies the service after a restart, using listening ports from the actual server config. If installation, restart, or verification fails, it rolls back `config.json` and `.env`, restoring their original contents and existence. INT, TERM, and HUP also trigger rollback while a change is awaiting verification. A PID file lock (`.isp.lock`) prevents concurrent runs; stale locks are taken over and stale temporary files are cleaned up under the lock. Credentials are read without echo on a terminal and are not printed in logs or passed to curl in command arguments.
+The command validates the candidate configuration and verifies the service after a restart, using listening ports from the actual server config. If installation, restart, or verification fails, it rolls back `config.json` and `.env`, restoring the original files from the transaction snapshot. INT, TERM, and HUP also trigger rollback while a change is awaiting verification. A PID file lock (`.isp.lock`) prevents concurrent runs; stale locks are taken over and stale temporary files are cleaned up under the lock. Credentials are read without echo on a terminal and are not printed in logs or passed to curl in command arguments.
 
 Configuration validation and direct SOCKS5/egress checks do not prove that application traffic follows the intended domain route. Verify the selected domains and the default VPS exit in the deployment environment.
 
@@ -50,7 +50,7 @@ Configuration validation and direct SOCKS5/egress checks do not prove that appli
 
 The TypeScript ISP model differs from `scripts/isp-outbound.sh` and the `shell-version` v1.1.0 release. The legacy shell workflow remains available and retains its extra-port, four-node behavior; full ISP parity is no longer a goal.
 
-The server migration recognizes the known legacy inbound tags `ss-isp-in` and `vless-reality-isp-in` and their dedicated routes. It removes only these managed legacy objects; mixed inbound matches retain their other tags. If a custom reference cannot be migrated safely, the command stops before changing files and requests manual migration. Port numbers alone do not identify legacy objects.
+The server migration recognizes the known legacy inbound tags `ss-isp-in` and `vless-reality-isp-in` and their dedicated routes. It removes only these managed legacy objects; mixed inbound matches retain their other tags. If a custom reference cannot be migrated safely, the command stops before changing files and requests manual migration. Port numbers alone do not identify legacy objects. After a successful add or remove actually retires legacy listeners, the command prints a reminder to regenerate the client `clash.yaml` and close the old ISP ports. No migration reminder is printed for an ordinary two-node update, a no-op, or a failed transaction.
 
 Old client files may still contain `shadowsocks-isp` and `vless-reality-isp` on the retired extra ports. ISP commands leave those files untouched. Explicitly replace them before using the migrated server:
 

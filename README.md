@@ -6,6 +6,8 @@ Shadowsocks 2022 and VLESS-Reality-Vision nodes with sing-box in Docker; exports
 
 Supported: Debian and Ubuntu VPS only, x64 or arm64.
 
+Version 3.0.0 changes ISP routing and the library API. See the [breaking changes and upgrade steps](CHANGELOG.md) before upgrading an existing deployment.
+
 ```bash
 curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
 sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"

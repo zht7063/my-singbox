@@ -60,9 +60,15 @@ case "$*" in
     *-lun*) proto=udp; state=UNCONN ;;
     *) exit 0 ;;
 esac
+# Emit one small write: grep -q may close the pipe after the first match,
+# and per-listener writes would turn that success into SIGPIPE under pipefail.
+listener_output=''
 while read -r p port; do
-    [[ "$p" == "$proto" ]] && echo "$state 0 4096 0.0.0.0:$port 0.0.0.0:*"
+    if [[ "$p" == "$proto" ]]; then
+        listener_output+="$state 0 4096 0.0.0.0:$port 0.0.0.0:*"$'\n'
+    fi
 done < "$STUB_STATE/listeners"
+printf '%s' "$listener_output"
 exit 0
 STUB
 

@@ -179,6 +179,21 @@ it('gen-config: keeps the original two inbounds and the direct outbound', async 
   expect(config.inbounds.map((n: { listen_port: number }) => n.listen_port)).toEqual([8388, 8443]);
   expect(config.outbounds.map((n: { tag: string }) => n.tag)).toEqual(['direct']);
 });
+it('gen-config: optional ISP filtering preserves sniff, final and unrelated route order without dangling ISP rules', async () => {
+  const dir = project();
+  const template = JSON.parse(read(dir, 'templates/config.json.template'));
+  const keep = [{ action: 'sniff' }, { domain: ['before.test'], outbound: 'direct' },
+    { ip_is_private: true, outbound: 'direct' }, { domain: ['after.test'], outbound: 'direct' }];
+  template.route = { rules: [keep[0], keep[1], { domain_suffix: ['optional.test'], outbound: 'isp-socks' },
+    keep[2], { domain: ['optional-last.test'], outbound: 'isp-socks' }, keep[3]], final: 'direct', auto_detect_interface: true };
+  writeFileSync(join(dir, 'templates/config.json.template'), JSON.stringify(template));
+  expect((await invoke('gen-config', dir)).code).toBe(0);
+  const config = JSON.parse(read(dir, 'config.json'));
+  expect(config.route).toEqual({ rules: keep, final: 'direct', auto_detect_interface: true });
+  expect(config.outbounds.some((o: { tag: string }) => o.tag === 'isp-socks')).toBe(false);
+  expect(config.route.rules.some((r: { outbound?: string }) => r.outbound === 'isp-socks')).toBe(false);
+});
+
 it('gen-config: dies on a missing required key', async () => {
   const dir = project(fixtureText().replace(/^SS_PASSWORD=.*\n/m, ''));
   expect((await invoke('gen-config', dir)).stderr).toBe('Error: Missing .env key: SS_PASSWORD\n');

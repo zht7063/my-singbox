@@ -12,7 +12,7 @@ import {
   sweepStaleTmp, withLock,
 } from '../core/isp.js';
 import { envUnquote, envWithIsp, envWithoutIsp } from '../core/env.js';
-import { isIspRule, isRecord } from '../core/routing.js';
+import { isIspRule, isLegacyIspRule } from '../core/routing.js';
 import { isIpv4, isIpv6Strict, parseIspAddr, validCred } from '../core/validate.js';
 import { IspService } from '../core/isp-service.js';
 
@@ -108,7 +108,7 @@ export async function ispOutbound(
         await previous.showLogs();
         throw new IspError(`Rollback failed to restart sing-box. Previous files are restored from ${backupDir}; run: docker compose up -d --force-recreate`);
       }
-      if (!await previous.verifyService(false)) {
+      if (!await previous.verifyService()) {
         await previous.showLogs();
         throw new IspError('Rollback restored the files, but sing-box is not healthy. Check: docker compose logs sing-box');
       }
@@ -118,7 +118,7 @@ export async function ispOutbound(
 
   const apply = async (
     image: string, original: { text: string; config: SingboxConfig },
-    config: SingboxConfig, envText: string, envCandidate: string, expectIsp: boolean,
+    config: SingboxConfig, envText: string, envCandidate: string,
   ): Promise<boolean> => {
     const changed = !isDeepStrictEqual(config, original.config);
     const envChanged = envCandidate !== envText;
@@ -128,7 +128,6 @@ export async function ispOutbound(
       await confirmRestart();
     }
     if (!changed && !envChanged) return false;
-    if (envChanged) candidate(envCandidate);
     backupDir = makeBackup(projectDir, MANAGED_FILES);
     info(`Backup saved in ${backupDir}`);
     rollbackArmed = true;
@@ -139,12 +138,18 @@ export async function ispOutbound(
     }
     if (envChanged) installFile(path('.env'), envCandidate, projectDir);
     controller.signal.throwIfAborted();
-    if ((changed && !await service.recreate()) || !await service.verifyService(expectIsp)) {
+    if ((changed && !await service.recreate()) || !await service.verifyService()) {
       await service.showLogs();
       throw new IspError('sing-box did not come up after the ISP change.');
     }
     controller.signal.throwIfAborted();
     rollbackArmed = false;
+    const remainingTags = new Set(config.inbounds.map((inbound) => inbound.tag));
+    const retiredPorts = original.config.inbounds
+      .filter((inbound) => !remainingTags.has(inbound.tag))
+      .map((inbound) => inbound.listen_port);
+    if (retiredPorts.length)
+      info(`Regenerate the client clash.yaml; legacy ISP ports ${retiredPorts.join('/')} can now be closed.`);
     return true;
   };
 
@@ -162,21 +167,18 @@ export async function ispOutbound(
     if (got.toLowerCase() !== expected.toLowerCase())
       throw new IspError(`Egress IP through the proxy is ${got}, expected ${expected}. If the ISP's egress differs from its entry IP, enter the egress IP when asked. Nothing was changed.`);
     info(`Egress IP through the SOCKS5 proxy: ${got} (matches).`);
-    let config = addIspToConfig(original.config, isp);
-    if (!config.route?.rules?.some(isIspRule) && config.route?.final !== OUT_TAG) {
-      const template = loadSingboxTemplate(projectDir);
-      if (!isRecord(template) || (template.route !== undefined && !isRecord(template.route)))
-        throw new IspError('Invalid route in config.json.template.');
-      config = addIspToConfig(config, isp, template.route);
-    }
+    const hasIspPolicy = original.config.route?.final === OUT_TAG ||
+      original.config.route?.rules?.some((rule) => isIspRule(rule) && !isLegacyIspRule(rule));
+    const routeDefaults = hasIspPolicy ? undefined : loadSingboxTemplate(projectDir).route;
+    const config = addIspToConfig(original.config, isp, routeDefaults);
     const changed = await apply(image, original, config, envText,
-      envWithIsp(envText, { ...isp, egressIp: isp.egressIp ?? '' }), true);
+      envWithIsp(envText, { ...isp, egressIp: isp.egressIp ?? '' }));
     if (!changed) {
       info('config.json already has this ISP outbound.');
-      if (!await service.verifyService(true)) {
+      if (!await service.verifyService()) {
         warn('sing-box is not healthy. Restarting it once...');
         await confirmRestart();
-        if (!await service.recreate() || !await service.verifyService(true)) {
+        if (!await service.recreate() || !await service.verifyService()) {
           await service.showLogs();
           throw new IspError('sing-box is still not healthy after a restart. Server files were not changed.');
         }
@@ -191,7 +193,7 @@ export async function ispOutbound(
     const original = preflightConfig();
     const envText = isFile(path('.env')) ? readFileSync(path('.env'), 'utf8') : '';
     const config = removeIspFromConfig(original.config);
-    const changed = await apply(image, original, config, envText, envWithoutIsp(envText), false);
+    const changed = await apply(image, original, config, envText, envWithoutIsp(envText));
     info(changed ? `\nISP outbound and its targeted rules removed. Other server settings are preserved; route.final: ${config.route?.final ?? 'direct'}.`
       : '\nNo ISP outbound was configured. Nothing to remove.');
   };

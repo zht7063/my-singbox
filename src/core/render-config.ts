@@ -1,5 +1,5 @@
 import type { Model, RealityCreds, SsCreds } from '../model.js';
-import { ensureRoute, isRecord, omitIsp, upsertIspOutbound } from './routing.js';
+import { ensureRoute, omitIsp, upsertIspOutbound } from './routing.js';
 import { readTemplate } from './templates.js';
 
 export interface SingboxConfig {
@@ -65,13 +65,5 @@ export function serializeSingbox(config: SingboxConfig): string {
 }
 
 export function loadSingboxTemplate(projectDir?: string): SingboxConfig {
-  const template: unknown = JSON.parse(readTemplate('config.json.template', projectDir));
-  if (!isRecord(template) || !Array.isArray(template.inbounds) ||
-      !template.inbounds.every(isRecord) ||
-      (template.outbounds !== undefined && (!Array.isArray(template.outbounds) ||
-        !template.outbounds.every(isRecord))) ||
-      (template.route !== undefined && (!isRecord(template.route) ||
-        (template.route.rules !== undefined && !Array.isArray(template.route.rules)))))
-    throw new Error('Invalid sing-box template structure.');
-  return template as unknown as SingboxConfig;
+  return JSON.parse(readTemplate('config.json.template', projectDir));
 }

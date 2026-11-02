@@ -174,10 +174,7 @@ export class IspService {
     return false;
   }
 
-  /** @deprecated ISP configuration no longer adds listeners. */
-  async portsFree(): Promise<void> {}
-
-  async verifyService(_expectIsp?: boolean): Promise<boolean> {
+  async verifyService(): Promise<boolean> {
     let status = 'missing';
     for (let i = 0; i < 15; i++) {
       status = await this.containerStatus();

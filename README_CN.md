@@ -6,6 +6,8 @@
 
 支持：仅限 Debian 和 Ubuntu VPS，x64 或 arm64。
 
+3.0.0 调整了 ISP 路由方式及库 API。升级已有部署前，请阅读[不兼容变更与迁移步骤](CHANGELOG.md)。
+
 ```bash
 curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
 sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"

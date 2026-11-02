@@ -195,9 +195,9 @@ backup_count() { find "$PROJECT/.isp-backup" -mindepth 1 -maxdepth 1 -type d 2>/
     [ "$(jq -c '.outbounds[0:1]' "$c")" = "$(jq -c '.outbounds' "$o")" ]
     [ "$(jq -c '.outbounds[1]' "$c")" = \
       '{"type":"socks","tag":"isp-socks","server":"198.51.100.7","server_port":1080,"version":"5","username":"isp-user","password":"S3cret-pass"}' ]
-    # Routing by inbound tag.
+    # Keep sniffing before legacy routing by inbound tag.
     [ "$(jq -c '.route.rules' "$c")" = \
-      '[{"inbound":["ss-isp-in","vless-reality-isp-in"],"outbound":"isp-socks"}]' ]
+      '[{"action":"sniff"},{"inbound":["ss-isp-in","vless-reality-isp-in"],"outbound":"isp-socks"}]' ]
     [ "$(stat -c %a "$c")" = 600 ]
 }
 

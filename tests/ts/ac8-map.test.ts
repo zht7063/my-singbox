@@ -25,12 +25,12 @@ function testTitles(file: string): string[] {
 }
 const titlesByFile = new Map<string, string[]>();
 
-it('AC8 inventories all nine bats files and exactly 162 distinct mapping rows', () => {
+it('AC8 inventories all nine bats files and exactly 163 distinct mapping rows', () => {
   expect(new Set(cases.map((test) => test.file)).size).toBe(9);
-  expect(cases).toHaveLength(162);
-  expect(rows).toHaveLength(162);
+  expect(cases).toHaveLength(163);
+  expect(rows).toHaveLength(163);
   expect(rows.every((row) => row.length === 6)).toBe(true);
-  expect(new Set(rows.map(([file, name]) => key(file, name))).size).toBe(162);
+  expect(new Set(rows.map(([file, name]) => key(file, name))).size).toBe(163);
   expect(rows.map(([file, name]) => key(file, name)).sort())
     .toEqual(cases.map(({ file, name }) => key(file, name)).sort());
 });
@@ -47,9 +47,9 @@ for (const { file, name } of cases) {
       expect(tsFile).toMatch(/^tests\/ts\/(init|start)\.test\.ts$/);
       expect(reason).toContain('ts-p4-start');
     }
-    if (status !== 'covered') return;
+    if (status !== 'covered' && status !== 'deviation') return;
     expect(tsFile).toMatch(/^tests\/ts\/(?:[\w-]+\/)*[\w-]+\.test\.ts$/);
-    expect(title, 'covered rows need a title citation').not.toBe('');
+    expect(title, 'covered and deviation rows need a title citation').not.toBe('');
     const path = resolve(root, tsFile);
     expect(existsSync(path), `missing TS file: ${tsFile}`).toBe(true);
     if (!titlesByFile.has(path)) titlesByFile.set(path, testTitles(path));

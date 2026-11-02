@@ -46,16 +46,30 @@ function addedLines(before: string, after: string) {
   return after.split('\n').filter((line) => !lines.has(line)).join('\n');
 }
 
+const migrationNotice = /regenerat[^\n]*clash\.yaml|clash\.yaml[^\n]*regenerat/i;
+function noMigrationNotice(r: Result) {
+  expect(r.stdout + r.stderr).not.toMatch(migrationNotice);
+}
+function legacyListeners() {
+  const config = h.config();
+  config.inbounds.push({ ...config.inbounds[0], tag: 'ss-isp-in', listen_port: 13839 },
+    { ...config.inbounds[1], tag: 'vless-reality-isp-in', listen_port: 18444 });
+  config.route!.rules!.push({ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' });
+  writeConfig(config);
+  h.set('listeners', cleanListeners + 'tcp 13839\nudp 13839\ntcp 18444\n');
+}
 function addNotice(r: Result) {
   ok(r);
   expect(r.stdout).toMatch(/route/i);
   expect(r.stdout).toContain('direct');
   expect(r.stdout).not.toMatch(/13839|18444|ufw allow|ACTION REQUIRED/);
+  noMigrationNotice(r);
 }
 function removeNotice(r: Result) {
   ok(r);
   expect(r.stdout).toMatch(/direct|Nothing to remove/);
   expect(r.stdout).not.toMatch(/13839|18444|ufw delete|ACTION REQUIRED/);
+  noMigrationNotice(r);
 }
 
 it("AC8[repo: .gitignore covers the script's runtime files] AC9 runtime artifacts are ignored", () => {
@@ -525,20 +539,61 @@ it('AC8[config.json not writable: fails early with a clear error, writes nothing
   finally { chmodSync(join(h.dir, 'config.json'), 0o600); }
 });
 
-it('AC8[notice: a successful add prints the complete allow-the-ports notice on stdout] AC14 add reports server route and final outbound', async () => { addNotice(await h.add()); });
-it('AC8[notice: a no-change re-run of add prints it again] AC14 no-op add reports server route and final outbound', async () => { ok(await h.add()); addNotice(await h.keep()); });
-it('AC8[notice: a successful remove prints the ports-can-be-closed note] AC14 removal reports preserved direct final outbound', async () => { ok(await h.add()); removeNotice(await h.remove()); expect(h.snapshot()).toBe(original); });
-it('AC8[notice: remove with nothing configured still prints the note] AC14 no-op removal reports no configured ISP', async () => { removeNotice(await h.remove()); nothingWritten(); });
+it('AC14 add reports server route and final outbound without a migration notice', async () => { addNotice(await h.add()); });
+it('AC14 no-op add reports server route and final outbound without a migration notice', async () => { ok(await h.add()); addNotice(await h.keep()); });
+it('AC14 removal reports preserved direct final outbound without a migration notice', async () => { ok(await h.add()); removeNotice(await h.remove()); expect(h.snapshot()).toBe(original); });
+it('AC14 no-op removal reports no configured ISP without a migration notice', async () => { removeNotice(await h.remove()); nothingWritten(); });
 
-it('AC8[notice: not printed when the add fails, is declined or is rolled back] AC14 no success notice on add failure', async () => {
+it('AC14 add failures, declines and rollbacks never report success', async () => {
   for (const name of ['break_isp', 'fail_check'] as const) {
     h.switch(name); const r = await h.add(); failed(r); expect(r.stdout).not.toContain('ISP outbound is configured'); h.switch(name, false);
   }
   const r = await h.ispRun(['--add'], [...freshLines(), 'n']); failed(r); expect(r.stdout).not.toContain('ISP outbound is configured');
 });
 
-it('AC8[notice: not printed when a remove is rolled back] AC14 no success notice on remove failure', async () => {
+it('AC14 rolled-back removal never reports success', async () => {
   ok(await h.add()); h.switch('break_clean'); const r = await h.remove(); failed(r); expect(r.stdout).not.toContain('targeted rules removed');
+});
+
+it.each(['add', 'remove'])('AC14 successful legacy listener migration on %s reports regeneration once and preserves legacy client bytes', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  legacyListeners();
+  const doc = yaml();
+  doc.proxies.push({ ...doc.proxies[0], name: 'shadowsocks-isp', port: 13839 },
+    { ...doc.proxies[1], name: 'vless-reality-isp', port: 18444 });
+  doc['proxy-groups'][0].proxies.push('shadowsocks-isp', 'vless-reality-isp');
+  writeYaml(doc);
+  const clientBefore = h.read('clash.yaml');
+  const result = action === 'add' ? await h.add() : await h.remove(); ok(result);
+  expect((result.stdout + result.stderr).split('\n').filter((line) => migrationNotice.test(line))).toHaveLength(1);
+  expect(result.stdout + result.stderr).toMatch(/13839.*18444/);
+  expect(result.stdout + result.stderr).toMatch(/clos/i);
+  expect(h.config().inbounds.map((inbound) => inbound.tag)).toEqual(['ss-in', 'vless-reality-in']);
+  expect(h.read('clash.yaml')).toBe(clientBefore);
+  if (action === 'add') {
+    expect(h.config().route).toEqual(loadSingboxTemplate(root).route);
+    addNotice(await h.keep());
+  } else removeNotice(await h.remove());
+});
+
+it.each(['add', 'remove'])('AC14 failed or declined legacy migration on %s never prints a migration notice', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  legacyListeners();
+  const before = h.snapshot();
+  for (const failure of ['fail_check', action === 'add' ? 'break_isp' : 'break_clean'] as const) {
+    h.switch(failure); const result = action === 'add' ? await h.add() : await h.remove();
+    failed(result); noMigrationNotice(result); expect(h.snapshot()).toBe(before); h.switch(failure, false);
+  }
+  const declined = await h.ispRun([`--${action}`], action === 'add' ? [...freshLines(), 'n'] : ['n']);
+  failed(declined, 'Aborted'); noMigrationNotice(declined); expect(h.snapshot()).toBe(before);
+});
+
+it.each(['add', 'remove'])('AC14 removing only a stale legacy route on %s does not report listener migration', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  const config = h.config();
+  config.route!.rules!.push({ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' });
+  writeConfig(config);
+  const result = action === 'add' ? await h.add() : await h.remove(); ok(result); noMigrationNotice(result);
 });
 
 it('AC8[no firewall is touched, nothing is installed and sudo is never called, in any flow] AC9 system tripwires cover all flows', async () => {
@@ -626,11 +681,13 @@ it('AC7 env installation failure after config replacement restores bytes and mod
   expect(h.upCount()).toBe(1); expect(existsSync(join(h.dir, '.isp.lock'))).toBe(false);
 });
 
-it('AC7 failed remove restores an originally absent env file state and leaves Clash absent', async () => {
-  ok(await h.add()); rmSync(join(h.dir, '.env')); rmSync(join(h.dir, 'clash.yaml'));
+it('AC7 failed remove restores existing config and env while leaving Clash absent', async () => {
+  ok(await h.add()); rmSync(join(h.dir, 'clash.yaml'));
+  h.write('.env', h.read('.env') + '# preserve rollback env\n');
   const before = h.snapshot(); h.switch('break_clean'); failed(await h.remove(), 'Rolling back');
   expect(h.snapshot()).toBe(before);
-  expect(existsSync(join(h.dir, '.env'))).toBe(false); expect(existsSync(join(h.dir, 'clash.yaml'))).toBe(false);
+  expect(h.read('.env')).toContain('# preserve rollback env\n');
+  expect(existsSync(join(h.dir, 'clash.yaml'))).toBe(false);
 });
 
 it('AC7 remove works without a historical clean backup and preserves current user edits', async () => {
@@ -667,6 +724,14 @@ it('CLI uses active template defaults only when no custom ISP routes exist', asy
   expect(h.config().route).toEqual(before);
   ok(await h.remove());
   const filesBefore = h.snapshot(); failed(await h.add()); expect(h.snapshot()).toBe(filesBefore);
+});
+
+it('CLI preserves an ISP final route without loading template defaults', async () => {
+  ok(await h.add());
+  const config = h.config(); config.route = { rules: [{ action: 'sniff' }], final: 'isp-socks', custom: true };
+  writeConfig(config); h.write('templates/config.json.template', '{invalid template');
+  const result = await h.keep(); ok(result); noMigrationNotice(result);
+  expect(h.config().route).toEqual(config.route);
 });
 
 it.each(['add', 'remove'])('CLI refuses unsupported legacy references before %s writes any managed file', async (action) => {
