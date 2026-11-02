@@ -4,9 +4,20 @@
 # MY_SINGBOX_NODE_MIRROR (download base), MY_SINGBOX_FORCE_NODE_INSTALL=1.
 # MY_SINGBOX_NODE_SHASUMS_BASE: test hook overriding the official checksum trust
 # anchor (default https://nodejs.org/dist); never point it at a mirror.
+legacy='https://github.com/zht7063/my-singbox/releases/tag/v1.1.0'
+if [ -z "${BASH_VERSION+x}" ]; then
+  if command -v bash >/dev/null 2>&1; then
+    if [ -f "$0" ] && [ -r "$0" ]; then
+      exec bash "$0" "$@"
+    fi
+    echo 'ERROR: run this installer from a saved file: sh install.sh' >&2
+  else
+    echo "ERROR: bash not found; musl/Alpine is unsupported by official Node/this tool; use shell v1.1.0: $legacy" >&2
+  fi
+  exit 1
+fi
 set -euo pipefail
 
-legacy='https://github.com/zht7063/my-singbox/releases/tag/v1.1.0'
 unsupported() {
   echo "ERROR: $*; use shell v1.1.0: $legacy" >&2
   exit 1

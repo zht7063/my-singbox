@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
-import { execFile, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -17,8 +17,10 @@ const available = ['bash', 'tar', 'curl'].every((tool) => {
   }
 });
 const test = it.skipIf(!available); // Requires bash, tar, curl; skip only when unavailable.
+const nonBashSh = spawnSync('/bin/sh', ['-c', '[ -z "${BASH_VERSION+x}" ]']).status === 0;
 async function scenario(
   options: {
+    shell?: 'bash' | 'sh';
     tampered?: boolean;
     missing?: boolean;
     unreachable?: boolean;
@@ -144,7 +146,7 @@ async function scenario(
     let stderr = '';
     let code = 0;
     try {
-      ({ stdout, stderr } = await execute('bash', ['install.sh'], {
+      ({ stdout, stderr } = await execute(options.shell ?? 'bash', ['install.sh'], {
         env: {
           ...process.env,
           HOME: home,
@@ -197,6 +199,43 @@ async function scenario(
     rmSync(root, { recursive: true, force: true });
   }
 }
+it.skipIf(!nonBashSh)('sh without bash prints the legacy hint and creates nothing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'my-singbox-no-bash-'));
+  const home = join(root, 'home');
+  const path = join(root, 'path');
+  mkdirSync(home);
+  mkdirSync(path);
+  try {
+    const r = spawnSync('/bin/sh', ['install.sh'], {
+      env: { PATH: path, HOME: home },
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('ERROR: bash not found');
+    expect(r.stderr).toContain('musl/Alpine');
+    expect(r.stderr).toContain(
+      'use shell v1.1.0: https://github.com/zht7063/my-singbox/releases/tag/v1.1.0',
+    );
+    expect(r.stdout).toBe('');
+    expect(readdirSync(root, { recursive: true }).sort()).toEqual(['home', 'path']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test('sh re-executes bash and installs normally', async () => {
+  const r = await scenario({ shell: 'sh' });
+  expect(r.code).toBe(0);
+  expect(r.version).toBe('v22.99.0');
+});
+it.skipIf(!available || !nonBashSh)('sh reading the installer from stdin asks for a saved file', () => {
+  const r = spawnSync('sh', [], {
+    input: readFileSync('install.sh'),
+    env: { PATH: process.env.PATH },
+    encoding: 'utf8',
+  });
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain('ERROR: run this installer from a saved file: sh install.sh');
+});
 test('valid mirror tarball installs using official checksums', async () => {
   const r = await scenario();
   expect(r.code).toBe(0);

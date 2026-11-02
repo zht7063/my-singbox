@@ -2,7 +2,6 @@ import { run } from './commands.js';
 import { realSystem } from '../doctor/system.js';
 import { createInterface } from 'node:readline';
 import { spawnSync } from 'node:child_process';
-import { realCliDeps } from './deps.js';
 
 let readline: ReturnType<typeof createInterface> | undefined;
 let lines: AsyncIterableIterator<string> | undefined;
@@ -22,7 +21,6 @@ try {
     system: realSystem(),
     cwd: process.cwd(),
     env: process.env,
-    deps: realCliDeps(process.env.SING_BOX_VERSION ?? ''),
     readLine,
     readSecret: async (prompt) => {
       if (!process.stdin.isTTY) return readLine(prompt);
