@@ -58,11 +58,10 @@ case "$1" in
           [[ -e "$S/fail_up_isp" ]] && exit 1
           if [[ -e "$S/term_on_up" ]]; then kill -TERM "$PPID"; exit 0; fi
           if [[ -e "$S/break_isp" ]]; then echo exited > "$S/status"; : > "$S/listeners"; exit 0; fi
-          printf 'tcp 8388\nudp 8388\ntcp 8443\ntcp 13839\nudp 13839\ntcp 18444\n' > "$S/listeners"
         else
           if [[ -e "$S/break_clean" ]]; then echo exited > "$S/status"; : > "$S/listeners"; exit 0; fi
-          printf 'tcp 8388\nudp 8388\ntcp 8443\n' > "$S/listeners"
         fi
+        "$REAL_JQ" -r '.inbounds[] | select(.listen_port != null) | "tcp \(.listen_port)", (if .type == "shadowsocks" then "udp \(.listen_port)" else empty end)' "$proj/config.json" > "$S/listeners"
         echo running > "$S/status"
         exit 0 ;;
     esac ;;
@@ -180,7 +179,11 @@ export async function setupIsp() {
   }
   // Remove jq from PATH without breaking the stubs: they inspect via REAL_JQ.
   function withoutJq() {
-    for (const name of ['cat', 'cp', 'chmod', 'grep']) symlinkSync(`/usr/bin/${name}`, join(bin, name));
+    for (const name of ['cat', 'cp', 'chmod', 'grep']) {
+      const executable = [`/usr/bin/${name}`, `/bin/${name}`].find(existsSync);
+      if (!executable) throw new Error(`Missing test prerequisite: ${name}`);
+      symlinkSync(executable, join(bin, name));
+    }
     env.PATH = bin;
   }
   return {

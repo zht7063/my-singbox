@@ -86,8 +86,8 @@ export async function dockerAccessGuidance(s: System): Promise<string> {
   const already = groups.trim().split(/\s+/).includes('docker');
   return [
     'This tool never uses sudo and never escalates privileges itself.',
-    'Open firewall / cloud security group ports: 8388/tcp, 8388/udp, 8443/tcp; ' +
-      'only for optional ISP outbound: 13839/tcp, 13839/udp, 18444/tcp.',
+    'Open firewall / cloud security group ports: 8388/tcp, 8388/udp, 8443/tcp. ' +
+      'ISP routing uses the same listening ports.',
     ...(already
       ? [
           'The Docker daemon may not be running, or your session predates the group change. ' +

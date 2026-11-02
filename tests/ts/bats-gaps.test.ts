@@ -29,7 +29,7 @@ it("AC8[gen-config: ISP keys placed before the other keys are accepted]", async 
   const dir = project(text);
   expect((await invoke('gen-config', dir)).code).toBe(0);
   const config = JSON.parse(read(dir, 'config.json'));
-  expect(config.inbounds).toHaveLength(4);
+  expect(config.inbounds).toHaveLength(2);
   expect(config.outbounds.at(-1).username).toBe(populatedIsp.user);
 });
 

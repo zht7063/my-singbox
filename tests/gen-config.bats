@@ -51,6 +51,33 @@ run_gen_config() {
     [ "$(jq -r '.outbounds | map(.tag) | join(",")' "$PROJECT/config.json")" = "direct" ]
 }
 
+@test "gen-config: optional ISP filtering preserves sniff, final and unrelated route order without dangling ISP rules" {
+    local template="$PROJECT/templates/config.json.template"
+    jq '.route = {
+        rules: [
+            {action:"sniff"},
+            {domain:["before.test"],outbound:"direct"},
+            {domain_suffix:["optional.test"],outbound:"isp-socks"},
+            {ip_is_private:true,outbound:"direct"},
+            {domain:["optional-last.test"],outbound:"isp-socks"},
+            {domain:["after.test"],outbound:"direct"}
+        ], final:"direct", auto_detect_interface:true
+    }' "$template" > "$BATS_TEST_TMPDIR/custom-template"
+    mv "$BATS_TEST_TMPDIR/custom-template" "$template"
+    # Legacy generators accept stored ISP values but do not create the outbound.
+    printf '%s\n' 'ISP_SOCKS_ADDR=198.51.100.7:1080' 'ISP_SOCKS_USER=synthetic-user' \
+        'ISP_SOCKS_PASS=synthetic-password' >> "$PROJECT/.env"
+    run_gen_config
+    [ "$status" -eq 0 ]
+    jq -e '.route == {
+        rules: [{action:"sniff"},{domain:["before.test"],outbound:"direct"},
+            {ip_is_private:true,outbound:"direct"},{domain:["after.test"],outbound:"direct"}],
+        final:"direct", auto_detect_interface:true
+    }' "$PROJECT/config.json" >/dev/null
+    jq -e '[.outbounds[] | select(.tag == "isp-socks")] == [] and
+        ([.route.rules[] | select(.outbound == "isp-socks")] == [])' "$PROJECT/config.json" >/dev/null
+}
+
 @test "gen-config: refuses to overwrite an existing config.json" {
     echo 'sentinel' > "$PROJECT/config.json"
     run_gen_config

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
 import type { IspSocks } from '../model.js';
-import { SS_PORT, VLESS_PORT, SS_ISP_PORT, VLESS_ISP_PORT } from '../model.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { firewallPorts } from './start.js';
 import { isIpv4, isIpv6Strict } from './validate.js';
 import { IspError } from './isp.js';
 
@@ -172,21 +174,7 @@ export class IspService {
     return false;
   }
 
-  async portsFree(): Promise<void> {
-    const probe = await this.command('ss', ['-H', '-ltn']);
-    if (probe.missing) {
-      this.warn(`ss is not installed. Skipping the check that ports ${SS_ISP_PORT} and ${VLESS_ISP_PORT} are free.`);
-      return;
-    }
-    for (const [proto, port] of [
-      ['tcp', SS_ISP_PORT], ['udp', SS_ISP_PORT], ['tcp', VLESS_ISP_PORT],
-    ] as const) {
-      if (await this.portListening(proto, port))
-        throw new IspError(`Port ${port}/${proto} is already in use by another process.`);
-    }
-  }
-
-  async verifyService(expectIsp: boolean): Promise<boolean> {
+  async verifyService(): Promise<boolean> {
     let status = 'missing';
     for (let i = 0; i < 15; i++) {
       status = await this.containerStatus();
@@ -201,15 +189,14 @@ export class IspService {
       this.warn('sing-box config check failed inside the container.');
       return false;
     }
-    for (const port of [SS_PORT, VLESS_PORT, ...(expectIsp ? [SS_ISP_PORT, VLESS_ISP_PORT] : [])]) {
-      if (!await this.waitListening('tcp', port)) {
-        this.warn(`Port ${port}/tcp is not accepting connections.`);
+    const listeners = firewallPorts(readFileSync(join(this.io.projectDir, 'config.json'), 'utf8'));
+    for (const listener of new Set(listeners)) {
+      const [number, proto] = listener.split('/');
+      const port = Number(number);
+      if (!await this.waitListening(proto as 'tcp' | 'udp', port)) {
+        this.warn(`Port ${port}/${proto} is not listening.`);
         return false;
       }
-    }
-    if (expectIsp && !await this.waitListening('udp', SS_ISP_PORT)) {
-      this.warn(`Port ${SS_ISP_PORT}/udp is not listening.`);
-      return false;
     }
     return true;
   }

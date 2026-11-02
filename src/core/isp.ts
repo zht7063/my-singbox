@@ -5,19 +5,18 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-import { parseDocument, isMap, isSeq, isScalar, visit, type YAMLMap } from 'yaml';
 import {
   type IspSocks, SS_TAG, VLESS_TAG, SS_ISP_TAG, VLESS_ISP_TAG, OUT_TAG,
-  SS_PORT, VLESS_PORT, SS_ISP_PORT, VLESS_ISP_PORT,
-  NODE_SS, NODE_VLESS, NODE_SS_ISP, NODE_VLESS_ISP,
+  SS_ISP_PORT, VLESS_ISP_PORT,
 } from '../model.js';
 import type { SingboxConfig } from './render-config.js';
 import { ENV_HEADER, ENV_HEADER_NOEOL } from './env.js';
+import { ensureRoute, isLegacyIspRule, isRecord, omitIsp, upsertIspOutbound, type RoutePolicy } from './routing.js';
 
 export const ISP_BACKUP_DIR = '.isp-backup', ISP_LOCK_FILE = '.isp.lock',
   ISP_TMP_PREFIX = '.isp-tmp.', GROUP_MAIN = 'Proxy';
-export const MANAGED_FILES = ['config.json', 'clash.yaml', '.env'] as const;
+export const MANAGED_FILES = ['config.json', '.env'] as const;
+export type ManagedFile = typeof MANAGED_FILES[number] | 'clash.yaml';
 export class IspError extends Error {
   override name = 'IspError';
 }
@@ -35,119 +34,71 @@ export function envHasIsp(text: string): boolean {
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 export function checkIspConfig(config: unknown): asserts config is SingboxConfig {
   if (!isRecord(config)) throw new IspError('config.json is not valid JSON.');
   const inbounds = config.inbounds;
-  if (!Array.isArray(inbounds) ||
-      ![SS_TAG, VLESS_TAG].every((tag) =>
-        inbounds.some((i) => isRecord(i) && i.tag === tag)))
+  if (!Array.isArray(inbounds) || !inbounds.every(isRecord) ||
+      ![SS_TAG, VLESS_TAG].every((tag) => inbounds.some((i) => i.tag === tag)))
     throw new IspError('config.json has no inbounds tagged ss-in and vless-reality-in.');
-  if (inbounds.some((i) => isRecord(i) &&
-      i.tag !== SS_ISP_TAG && i.tag !== VLESS_ISP_TAG &&
-      (i.listen_port === SS_ISP_PORT || i.listen_port === VLESS_ISP_PORT)))
-    throw new IspError(`Another inbound in config.json already uses port ${SS_ISP_PORT} or ${VLESS_ISP_PORT}.`);
+  if (config.outbounds !== undefined && (!Array.isArray(config.outbounds) ||
+      !config.outbounds.every(isRecord))) throw new IspError('config.json has invalid outbounds.');
+  if (config.route !== undefined && (!isRecord(config.route) ||
+      (config.route.rules !== undefined && !Array.isArray(config.route.rules))))
+    throw new IspError('config.json has invalid route rules.');
 }
 
 export function configHasIsp(config: SingboxConfig): boolean {
   return [...(config.inbounds ?? []), ...(config.outbounds ?? [])].some(
     (i) => isRecord(i) && [SS_ISP_TAG, VLESS_ISP_TAG, OUT_TAG].includes(i.tag as string),
-  );
+  ) || (config.route?.rules ?? []).some((r) => isRecord(r) && r.outbound === OUT_TAG);
 }
 
-export function addIspToConfig(config: SingboxConfig, isp: IspSocks): SingboxConfig {
-  checkIspConfig(config);
+/** Remove only the known old listener scheme; ambiguous references need manual migration. */
+function withoutLegacyListeners(config: SingboxConfig): SingboxConfig {
   const next = structuredClone(config);
-  for (const [base, tag, port] of [
-    [SS_TAG, SS_ISP_TAG, SS_ISP_PORT],
-    [VLESS_TAG, VLESS_ISP_TAG, VLESS_ISP_PORT],
-  ] as const) {
-    const existing = next.inbounds.find((i) => i.tag === tag);
-    if (existing) existing.listen_port = port;
-    else next.inbounds.push({
-      ...structuredClone(next.inbounds.find((i) => i.tag === base)!),
-      tag, listen_port: port,
-    });
-  }
-  const outbounds = next.outbounds ??= [];
-  const outbound = outbounds.find((o) => o.tag === OUT_TAG);
-  const fields = {
-    type: 'socks', tag: OUT_TAG, server: isp.host, server_port: isp.port,
-    version: '5', username: isp.user, password: isp.pass,
+  const tags = new Set([SS_ISP_TAG, VLESS_ISP_TAG]);
+  next.inbounds = next.inbounds.filter((inbound) => {
+    if (!tags.has(inbound.tag as string)) return true;
+    const ss = inbound.tag === SS_ISP_TAG;
+    if (inbound.type !== (ss ? 'shadowsocks' : 'vless') ||
+        inbound.listen_port !== (ss ? SS_ISP_PORT : VLESS_ISP_PORT))
+      throw new IspError('Legacy ISP inbound was customized. Migrate its tag and references manually first.');
+    return false;
+  });
+  if (next.route?.rules) next.route.rules = next.route.rules.flatMap((rule) => {
+    if (!isRecord(rule)) return [rule];
+    const inbound = typeof rule.inbound === 'string' ? [rule.inbound] : rule.inbound;
+    if (!Array.isArray(inbound) || !inbound.some((tag) => tags.has(tag))) return [rule];
+    const remaining = inbound.filter((tag) => !tags.has(tag));
+    if (remaining.length) return [{ ...rule, inbound: remaining }];
+    if (isLegacyIspRule(rule)) return [];
+    throw new IspError('A custom route depends on legacy ISP inbounds. Migrate it manually first.');
+  });
+  const check = (value: unknown, key = ''): void => {
+    if (typeof value === 'string' && tags.has(value) && ['inbound', 'detour'].includes(key))
+      throw new IspError('A custom reference depends on legacy ISP inbounds. Migrate it manually first.');
+    if (Array.isArray(value)) value.forEach((item) => check(item, key));
+    else if (isRecord(value)) Object.entries(value).forEach(([name, item]) => check(item, name));
   };
-  if (outbound) Object.assign(outbound, fields);
-  else outbounds.push(fields);
-  const rules = (next.route ??= {}).rules ??= [];
-  const rule = rules.find((r) => isRecord(r) && r.outbound === OUT_TAG);
-  const inbound = [SS_ISP_TAG, VLESS_ISP_TAG];
-  if (isRecord(rule)) {
-    if (!isDeepStrictEqual(rule.inbound, inbound)) rule.inbound = inbound;
-  } else rules.push({ inbound, outbound: OUT_TAG });
+  check(next);
   return next;
 }
 
-export function clashHasIsp(text: string): boolean {
-  if (/^\s*#.*\bmy-singbox-isp\b/m.test(text)) return true;
-  const doc = parseDocument(text);
-  const proxies = doc.get('proxies', true);
-  return isSeq(proxies) && proxies.items.some((p) => isMap(p) &&
-    [NODE_SS_ISP, NODE_VLESS_ISP].includes(p.get('name') as string));
+export function addIspToConfig(
+  config: SingboxConfig, isp: IspSocks, routeDefaults?: RoutePolicy,
+): SingboxConfig {
+  checkIspConfig(config);
+  const next = withoutLegacyListeners(config);
+  upsertIspOutbound(next, isp);
+  ensureRoute(next, routeDefaults);
+  return next;
 }
 
-export function addIspToClash(text: string, realityPrivateKey?: string): string {
-  const doc = parseDocument(text);
-  if (doc.errors.length) throw new IspError('clash.yaml is not valid YAML.');
-  const proxies = doc.get('proxies', true);
-  const missing = `clash.yaml has no usable node named "${NODE_SS}" and "${NODE_VLESS}". It was probably generated by an older version (My-sing-box / My-VLESS-Reality). Delete clash.yaml, run my-singbox conf-clash to regenerate it, re-import it in your clients, then re-run my-singbox isp-outbound --add.`;
-  if (!isSeq(proxies)) throw new IspError(missing);
-  let changed = false;
-  for (const [base, name, basePort, port] of [
-    [NODE_SS, NODE_SS_ISP, SS_PORT, SS_ISP_PORT],
-    [NODE_VLESS, NODE_VLESS_ISP, VLESS_PORT, VLESS_ISP_PORT],
-  ] as const) {
-    const proto = proxies.items.find((p) => isMap(p) && p.get('name') === base);
-    if (!isMap(proto) || proto.get('port') !== basePort) throw new IspError(missing);
-    const existing = proxies.items.find((p) => isMap(p) && p.get('name') === name);
-    if (isMap(existing)) {
-      if (existing.get('port') !== port) {
-        existing.set('port', port);
-        changed = true;
-      }
-    } else {
-      const clone = proto.clone() as YAMLMap;
-      visit(clone, (_key, node) => {
-        if (isMap(node) || isSeq(node) || isScalar(node)) {
-          delete node.comment;
-          delete node.commentBefore;
-          delete node.spaceBefore;
-        }
-      });
-      clone.set('name', name);
-      clone.set('port', port);
-      proxies.add(clone);
-      changed = true;
-    }
-  }
-  const groups = doc.get('proxy-groups', true);
-  const group = isSeq(groups)
-    ? groups.items.find((g) => isMap(g) && g.get('name') === GROUP_MAIN) : undefined;
-  const list = isMap(group) ? group.get('proxies', true) : undefined;
-  if (!isSeq(list))
-    throw new IspError(`clash.yaml has no '${GROUP_MAIN}' proxy group with a 'proxies:' list in the expected format (generated by my-singbox conf-clash). Regenerate clash.yaml, re-import it in your clients, then re-run my-singbox isp-outbound --add.`);
-  for (const name of [NODE_SS_ISP, NODE_VLESS_ISP]) {
-    if (!list.items.some((item) => isScalar(item) && item.value === name)) {
-      list.add(name);
-      changed = true;
-    }
-  }
-  const result = changed ? doc.toString({ lineWidth: 0 }) : text;
-  if (result.includes('REALITY_PRIVATE_KEY') ||
-      (realityPrivateKey && result.includes(realityPrivateKey)))
-    throw new IspError('Refusing to write REALITY_PRIVATE_KEY into clash.yaml.');
-  return result;
+export function removeIspFromConfig(config: SingboxConfig): SingboxConfig {
+  checkIspConfig(config);
+  const next = withoutLegacyListeners(config);
+  omitIsp(next);
+  return next;
 }
 
 export function makeTmpPath(projectDir: string): string {
@@ -185,7 +136,7 @@ function backupDirs(projectDir: string): string[] {
 }
 
 let lastStamp = 0n;
-export function makeBackup(projectDir: string): string {
+export function makeBackup(projectDir: string, files: readonly ManagedFile[] = MANAGED_FILES): string {
   const now = BigInt(Date.now()) * 1_000_000n;
   lastStamp = now > lastStamp ? now : lastStamp + 1n;
   const d = new Date(Number(lastStamp / 1_000_000n));
@@ -194,36 +145,23 @@ export function makeBackup(projectDir: string): string {
     `${(lastStamp % 1_000_000_000n).toString().padStart(9, '0')}-${process.pid}`;
   const root = join(projectDir, ISP_BACKUP_DIR), dir = join(root, stamp);
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  mkdirSync(dir, { mode: 0o700 });
   chmodSync(root, 0o700);
-  chmodSync(dir, 0o700);
-  for (const file of MANAGED_FILES) {
+  mkdirSync(dir, { mode: 0o700 });
+  for (const file of files) {
     const src = join(projectDir, file);
     if (existsSync(src) && statSync(src).isFile()) copyPreserved(src, join(dir, file));
   }
   const all = backupDirs(projectDir);
-  for (const old of all.slice(1, Math.max(1, all.length - 4)))
-    rmSync(old, { recursive: true });
+  for (const old of all.slice(1, Math.max(1, all.length - 4))) rmSync(old, { recursive: true });
   return dir;
 }
 
-export function findCleanBackup(projectDir: string): string | undefined {
-  return backupDirs(projectDir).reverse().find((dir) => MANAGED_FILES.every((file) => {
-    const path = join(dir, file);
-    if (!existsSync(path)) return true;
-    const text = readFileSync(path, 'utf8');
-    if (file === '.env') return !envHasIsp(text);
-    if (file === 'clash.yaml') return !clashHasIsp(text);
-    // Invalid JSON cannot be a known-clean restore candidate; do not expose its contents.
-    try { return !configHasIsp(JSON.parse(text)); }
-    catch { return false; }
-  }));
-}
-
-export function restoreBackup(projectDir: string, backupDir: string): void {
-  for (const file of MANAGED_FILES) {
-    const src = join(backupDir, file);
-    if (existsSync(src) && statSync(src).isFile()) copyPreserved(src, join(projectDir, file));
+export function restoreBackup(
+  projectDir: string, backupDir: string, files: readonly ManagedFile[] = MANAGED_FILES,
+): void {
+  for (const file of files) {
+    const src = join(backupDir, file), dest = join(projectDir, file);
+    if (existsSync(src) && statSync(src).isFile()) copyPreserved(src, dest);
   }
 }
 

@@ -148,7 +148,12 @@ for (const [cmd, file, message] of [
     const dir = project(fixtureText(enabled));
     expect((await invoke(cmd, dir)).code).toBe(0);
     const config = cmd === 'gen-config' ? JSON.parse(read(dir, file)) : parse(read(dir, file));
-    expect(cmd === 'gen-config' ? config.inbounds.length : config.proxies.length).toBe(enabled ? 4 : 2);
+    expect(cmd === 'gen-config' ? config.inbounds.length : config.proxies.length).toBe(2);
+    if (cmd === 'gen-config') {
+      expect(config.outbounds.some((o: { tag: string }) => o.tag === 'isp-socks')).toBe(enabled);
+      expect(config.route.rules[0]).toEqual({ action: 'sniff' });
+      expect(config.route.final).toBe('direct');
+    } else expect(config['proxy-groups'][0].proxies).toEqual(['shadowsocks', 'vless-reality', 'DIRECT']);
   });
 }
 
@@ -174,6 +179,21 @@ it('gen-config: keeps the original two inbounds and the direct outbound', async 
   expect(config.inbounds.map((n: { listen_port: number }) => n.listen_port)).toEqual([8388, 8443]);
   expect(config.outbounds.map((n: { tag: string }) => n.tag)).toEqual(['direct']);
 });
+it('gen-config: optional ISP filtering preserves sniff, final and unrelated route order without dangling ISP rules', async () => {
+  const dir = project();
+  const template = JSON.parse(read(dir, 'templates/config.json.template'));
+  const keep = [{ action: 'sniff' }, { domain: ['before.test'], outbound: 'direct' },
+    { ip_is_private: true, outbound: 'direct' }, { domain: ['after.test'], outbound: 'direct' }];
+  template.route = { rules: [keep[0], keep[1], { domain_suffix: ['optional.test'], outbound: 'isp-socks' },
+    keep[2], { domain: ['optional-last.test'], outbound: 'isp-socks' }, keep[3]], final: 'direct', auto_detect_interface: true };
+  writeFileSync(join(dir, 'templates/config.json.template'), JSON.stringify(template));
+  expect((await invoke('gen-config', dir)).code).toBe(0);
+  const config = JSON.parse(read(dir, 'config.json'));
+  expect(config.route).toEqual({ rules: keep, final: 'direct', auto_detect_interface: true });
+  expect(config.outbounds.some((o: { tag: string }) => o.tag === 'isp-socks')).toBe(false);
+  expect(config.route.rules.some((r: { outbound?: string }) => r.outbound === 'isp-socks')).toBe(false);
+});
+
 it('gen-config: dies on a missing required key', async () => {
   const dir = project(fixtureText().replace(/^SS_PASSWORD=.*\n/m, ''));
   expect((await invoke('gen-config', dir)).stderr).toBe('Error: Missing .env key: SS_PASSWORD\n');
@@ -236,7 +256,7 @@ it('conf-clash: loads defaults first, unions keys, and lets .env override', asyn
   writeFileSync(join(dir, 'templates/.env.template'), envWithIsp(fixtureText().replace(creds.serverAddress, 'default.example.com'), { addr: '198.51.100.7:1080', user: 'fixture', pass: 'fixture', egressIp: '' }));
   expect((await invoke('conf-clash', dir)).code).toBe(0);
   const config = parse(read(dir, 'clash.yaml'));
-  expect(config.proxies).toHaveLength(4);
+  expect(config.proxies).toHaveLength(2);
   expect(config.proxies[0].server).toBe(creds.serverAddress);
 });
 it('conf-clash: rejects invalid defaults before reading .env with the template label', async () => {

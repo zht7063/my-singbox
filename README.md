@@ -6,6 +6,8 @@ Shadowsocks 2022 and VLESS-Reality-Vision nodes with sing-box in Docker; exports
 
 Supported: Debian and Ubuntu VPS only, x64 or arm64.
 
+Version 3.0.0 changes ISP routing and the library API. See the [breaking changes and upgrade steps](CHANGELOG.md) before upgrading an existing deployment.
+
 ```bash
 curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
 sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
@@ -50,7 +52,11 @@ npx my-singbox isp-outbound --add
 npx my-singbox isp-outbound --remove
 ```
 
-Add an ISP SOCKS5 outbound (it asks for the proxy address and credentials) or remove it. Without an action, the command shows a menu; `--yes` or `-y` skips restart confirmation, and `--help` shows options. Add creates `shadowsocks-isp` on 13839 TCP/UDP and `vless-reality-isp` on 18444 TCP, adding them to `clash.yaml` when it exists. Re-import it in the client. The command saves backups in `.isp-backup`; removal restores a pre-ISP backup, so later edits to managed files are not retained in the restored files. It does not change firewall rules.
+Add or update an ISP SOCKS5 outbound (the command asks for its address and credentials), or remove it. Without an action, the command shows a menu; `--yes` or `-y` skips restart confirmation, and `--help` shows options.
+
+Clash keeps its existing rules, rule providers, and DNS settings: it chooses whether traffic goes directly from the client or enters the VPS. The server's `config.json` independently chooses the VPS's outbound. With ISP configured, sing-box sniffs traffic, sends the template's selected domains through `isp-socks`, and sends other traffic through `direct`. Without ISP, the optional ISP rules are omitted and the final outbound remains `direct`. Both modes use the same two base inbounds and client nodes on ports 8388 and 8443; ISP adds no listening ports or client nodes.
+
+Add and remove manage only `config.json` and `.env`, including backups and failure rollback; they never read or write `clash.yaml`. Removal edits the current config, preserving unrelated routes and later customizations, and does not require a pre-ISP backup. Existing ISP route conditions are preserved when updating credentials. See [ISP routing and migration](docs/ts/isp-outbound.md) for the default domains, custom route ordering, and legacy configuration migration.
 
 ### doctor
 
@@ -81,7 +87,7 @@ npx my-singbox start
 
 ## Firewall and ports
 
-Open 8388/tcp, 8388/udp, and 8443/tcp in the local firewall and cloud security group. For ISP outbound, also open 13839/tcp, 13839/udp, and 18444/tcp. The tool never changes firewall rules.
+Open 8388/tcp, 8388/udp, and 8443/tcp in the local firewall and cloud security group. ISP outbound uses these same listening ports. The tool never changes firewall rules.
 
 ## Install Docker
 
@@ -112,7 +118,7 @@ Generated `.env`, `config.json`, and `clash.yaml` files use mode 600. They conta
 
 ## Legacy shell version (v1.1.0)
 
-See [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0) and the [shell-version branch](https://github.com/zht7063/my-singbox/tree/shell-version).
+See [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0) and the [shell-version branch](https://github.com/zht7063/my-singbox/tree/shell-version). Its ISP workflow uses extra server ports and client nodes; the TypeScript CLI uses independent server routing instead and does not provide the same ISP behavior. Known legacy ISP server inbounds are migrated by their labels. To replace an old four-node client configuration, back up `clash.yaml`, move it aside, run `npx my-singbox conf-clash`, and re-import the generated file. Generation continues to refuse overwriting an existing file; ISP commands do not migrate the client file.
 
 ## For agents
 

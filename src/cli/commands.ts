@@ -38,8 +38,8 @@ Options: --help, -h
 `;
 const ispUsage = `Usage: my-singbox isp-outbound [--add | --remove] [--yes]
 
-  --add      add or update the ISP outbound (ports 13839 and 18444)
-  --remove   remove the ISP outbound and everything it added
+  --add      add or update the server ISP outbound and route policy
+  --remove   remove the ISP outbound and its targeted server rules
   --yes, -y  do not ask before restarting sing-box
   --help     show this help
 

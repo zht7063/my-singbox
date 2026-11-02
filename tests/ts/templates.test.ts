@@ -73,8 +73,9 @@ it("AC8[env.template: ISP_SOCKS_EGRESS_IP is the fourth key, commented out and e
   expect(text.match(/^# ISP_SOCKS_.*$/gm)?.at(3)).toBe('# ISP_SOCKS_EGRESS_IP=');
 });
 
-it("AC8[env.template: carries the 'filled automatically' comment]", async () => {
-  expect(readTemplate('.env.template')).toContain('# Optional; filled automatically by scripts/isp-outbound.sh, no need to edit manually.');
+it("AC8[env.template: names the TypeScript ISP command and independent routing]", async () => {
+  expect(readTemplate('.env.template')).toContain('# TypeScript uses config.json to route selected domains through ISP SOCKS5;');
+  expect(readTemplate('.env.template')).toContain('# Optional; managed by my-singbox isp-outbound --add / --remove.');
 });
 
 it("AC8[env.template: output is identical to a template that has no ISP block at all]", async () => {

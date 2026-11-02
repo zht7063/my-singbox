@@ -1,5 +1,5 @@
 import type { Model, RealityCreds, SsCreds } from '../model.js';
-import { OUT_TAG } from '../model.js';
+import { ensureRoute, omitIsp, upsertIspOutbound } from './routing.js';
 import { readTemplate } from './templates.js';
 
 export interface SingboxConfig {
@@ -34,7 +34,7 @@ export function renderSingbox(model: Model, template: unknown): SingboxConfig {
   const prototypes = new Map<string, Record<string, unknown>>();
   for (const protocol of ['shadowsocks', 'vless-reality'] as const) {
     const base = model.nodes.find(
-      (n) => n.protocol === protocol && n.egress === 'direct',
+      (n) => n.protocol === protocol,
     )!;
     const proto = config.inbounds.find(
       (i) => i.type === (protocol === 'shadowsocks' ? 'shadowsocks' : 'vless'),
@@ -52,27 +52,9 @@ export function renderSingbox(model: Model, template: unknown): SingboxConfig {
     tag: n.inbound.tag,
     listen_port: n.inbound.port,
   }));
-  const ispNodes = model.nodes.filter((n) => n.egress === 'isp-socks');
-  if (ispNodes.length) {
-    const isp = model.isp!;
-    config.outbounds = [
-      ...(config.outbounds ?? []),
-      {
-        type: 'socks',
-        tag: OUT_TAG,
-        server: isp.host,
-        server_port: isp.port,
-        version: '5',
-        username: isp.user,
-        password: isp.pass,
-      },
-    ];
-    config.route ??= {};
-    config.route.rules = [
-      ...(config.route.rules ?? []),
-      { inbound: ispNodes.map((n) => n.inbound.tag), outbound: OUT_TAG },
-    ];
-  }
+  ensureRoute(config);
+  if (model.isp) upsertIspOutbound(config, model.isp);
+  else omitIsp(config);
   if (JSON.stringify(config).includes('${'))
     throw new Error('Unresolved placeholder left in config.json.');
   return config;
@@ -82,6 +64,6 @@ export function serializeSingbox(config: SingboxConfig): string {
   return JSON.stringify(config, null, 2) + '\n';
 }
 
-export function loadSingboxTemplate(projectDir?: string): unknown {
+export function loadSingboxTemplate(projectDir?: string): SingboxConfig {
   return JSON.parse(readTemplate('config.json.template', projectDir));
 }

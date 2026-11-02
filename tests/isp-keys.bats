@@ -59,8 +59,10 @@ assert_unchanged() {
     refute grep -Eq '^[[:space:]]*ISP_SOCKS_EGRESS_IP' "$REPO_ROOT/templates/.env.template"
 }
 
-@test "env.template: carries the 'filled automatically' comment" {
-    grep -Fq '# Optional; filled automatically by scripts/isp-outbound.sh, no need to edit manually.' \
+@test "env.template: names the TypeScript ISP command and independent routing" {
+    grep -Fq '# TypeScript uses config.json to route selected domains through ISP SOCKS5;' \
+        "$REPO_ROOT/templates/.env.template"
+    grep -Fq '# Optional; managed by my-singbox isp-outbound --add / --remove.' \
         "$REPO_ROOT/templates/.env.template"
 }
 

@@ -18,20 +18,10 @@ it.each([false, true])(
     expect(out).not.toContain('${');
     expect(out.endsWith('\n')).toBe(true);
     expect(out.endsWith('\n\n')).toBe(false);
-    expect(b['proxy-groups'][0].proxies).toEqual(
-      withIsp
-        ? [
-            'shadowsocks',
-            'vless-reality',
-            'DIRECT',
-            'shadowsocks-isp',
-            'vless-reality-isp',
-          ]
-        : ['shadowsocks', 'vless-reality', 'DIRECT'],
-    );
-    expect(b.proxies.map((p: { port: number }) => p.port)).toEqual(
-      withIsp ? [8388, 8443, 13839, 18444] : [8388, 8443],
-    );
+    expect(b['proxy-groups'][0].proxies).toEqual(['shadowsocks', 'vless-reality', 'DIRECT']);
+    expect(b.proxies.map((p: { port: number }) => p.port)).toEqual([8388, 8443]);
+    expect(out).not.toContain('isp-socks');
+    expect(out).toBe(renderClash(fixtureModel(), template));
     expect(b.proxies[1]['reality-opts']['public-key']).toBe(
       creds.realityPublicKey,
     );

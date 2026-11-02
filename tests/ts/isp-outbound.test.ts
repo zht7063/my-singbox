@@ -1,10 +1,18 @@
-import { beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
 import { envQuote, envUnquote } from '../../src/core/env.js';
 import { isIpv6Strict } from '../../src/core/validate.js';
+import { loadSingboxTemplate } from '../../src/core/render-config.js';
+import { installFile } from '../../src/core/isp.js';
+
+vi.mock('../../src/core/isp.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/isp.js')>();
+  return { ...actual, installFile: vi.fn(actual.installFile) };
+});
+afterEach(() => { vi.mocked(installFile).mockClear(); });
 import { invoke, read, root } from './helpers/cli.js';
 import {
   setupIsp, address, username, password, freshLines, cleanListeners,
@@ -33,42 +41,35 @@ function writeConfig(config = h.config()) { h.write('config.json', JSON.stringif
 function envValue(key: string) { return h.read('.env').split('\n').find((line) => line.startsWith(key + '='))!.slice(key.length + 1); }
 const mode = (path: string) => statSync(path).mode & 0o777;
 const outbound = () => h.config().outbounds!.find((o) => o.tag === 'isp-socks')!;
-const ispNames = ['shadowsocks-isp', 'vless-reality-isp'];
 function addedLines(before: string, after: string) {
   const lines = new Set(before.split('\n'));
   return after.split('\n').filter((line) => !lines.has(line)).join('\n');
 }
 
+const migrationNotice = /regenerat[^\n]*clash\.yaml|clash\.yaml[^\n]*regenerat/i;
+function noMigrationNotice(r: Result) {
+  expect(r.stdout + r.stderr).not.toMatch(migrationNotice);
+}
+function legacyListeners() {
+  const config = h.config();
+  config.inbounds.push({ ...config.inbounds[0], tag: 'ss-isp-in', listen_port: 13839 },
+    { ...config.inbounds[1], tag: 'vless-reality-isp-in', listen_port: 18444 });
+  config.route!.rules!.push({ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' });
+  writeConfig(config);
+  h.set('listeners', cleanListeners + 'tcp 13839\nudp 13839\ntcp 18444\n');
+}
 function addNotice(r: Result) {
   ok(r);
-  for (const text of [
-    'ACTION REQUIRED: allow these ports yourself. This script does not open any port.',
-    '13839/tcp  (ss-isp-in, Shadowsocks)', '13839/udp  (ss-isp-in, Shadowsocks)',
-    '18444/tcp  (vless-reality-isp-in, VLESS Reality)', 'BOTH places',
-    'the local firewall on this server', "cloud provider's security group", 'Ports 8388 and 8443 are not affected',
-    'ufw allow 13839/tcp', 'ufw allow 13839/udp', 'ufw allow 18444/tcp',
-    'firewall-cmd --permanent --add-port=13839/tcp', 'firewall-cmd --permanent --add-port=13839/udp',
-    'firewall-cmd --permanent --add-port=18444/tcp', 'firewall-cmd --reload',
-    'iptables -I INPUT -p tcp --dport 13839 -j ACCEPT', 'iptables -I INPUT -p udp --dport 13839 -j ACCEPT',
-    'iptables -I INPUT -p tcp --dport 18444 -j ACCEPT', 'netfilter-persistent save',
-    'iptables-save > /etc/iptables/rules.v4', 'whole current iptables ruleset',
-  ]) expect(r.stdout).toContain(text);
-  expect(r.stderr).not.toContain('ACTION REQUIRED');
-  expect(r.stdout.indexOf('ISP outbound is active')).toBeLessThan(r.stdout.indexOf('ACTION REQUIRED'));
+  expect(r.stdout).toMatch(/route/i);
+  expect(r.stdout).toContain('direct');
+  expect(r.stdout).not.toMatch(/13839|18444|ufw allow|ACTION REQUIRED/);
+  noMigrationNotice(r);
 }
 function removeNotice(r: Result) {
   ok(r);
-  for (const text of [
-    'NOTE: the ISP ports are no longer used, so you can now close them yourself. This script does not close any port.',
-    'BOTH places', "cloud provider's security group", 'also removes a rule you added yourself for the same port',
-    'ufw delete allow 13839/tcp', 'ufw delete allow 13839/udp', 'ufw delete allow 18444/tcp',
-    'firewall-cmd --permanent --remove-port=13839/tcp', 'firewall-cmd --permanent --remove-port=13839/udp',
-    'firewall-cmd --permanent --remove-port=18444/tcp', 'firewall-cmd --reload',
-    'iptables -D INPUT -p tcp --dport 13839 -j ACCEPT', 'iptables -D INPUT -p udp --dport 13839 -j ACCEPT',
-    'iptables -D INPUT -p tcp --dport 18444 -j ACCEPT', 'netfilter-persistent save',
-  ]) expect(r.stdout).toContain(text);
-  expect(r.stderr).not.toContain('NOTE:');
-  expect(r.stdout).not.toContain('ACTION REQUIRED');
+  expect(r.stdout).toMatch(/direct|Nothing to remove/);
+  expect(r.stdout).not.toMatch(/13839|18444|ufw delete|ACTION REQUIRED/);
+  noMigrationNotice(r);
 }
 
 it("AC8[repo: .gitignore covers the script's runtime files] AC9 runtime artifacts are ignored", () => {
@@ -79,7 +80,11 @@ it("AC8[repo: .gitignore covers the script's runtime files] AC9 runtime artifact
 it('AC8[--help prints usage and needs neither root nor jq nor docker] AC14 help works with no commands on PATH', async () => {
   h.env.PATH = join(h.dir, 'empty');
   mkdirSync(h.env.PATH);
-  for (const name of ['dirname', 'cat']) symlinkSync(`/usr/bin/${name}`, join(h.env.PATH, name));
+  for (const name of ['dirname', 'cat']) {
+    const executable = [`/usr/bin/${name}`, `/bin/${name}`].find(existsSync);
+    if (!executable) throw new Error(`Missing test prerequisite: ${name}`);
+    symlinkSync(executable, join(h.env.PATH, name));
+  }
   const ts = await h.ispRun(['--help']), shell = h.ispSpawn(['--help'], [], true);
   ok(ts); ok(shell);
   for (const text of ['--add', '--remove', '--yes', 'Without --add or --remove']) {
@@ -120,15 +125,13 @@ it('AC8[declining the confirmation changes nothing] AC14 default confirmation re
   nothingWritten();
 });
 
-it('AC8[add: config.json gets the two ISP inbounds, the socks outbound and the route rule] AC2 clones and routes are incremental', async () => {
+it('AC8[add: config.json gets the two ISP inbounds, the socks outbound and the route rule] AC2 server outbound and template rules are incremental', async () => {
   const old = h.config(); ok(await h.add()); const next = h.config();
-  expect(next.inbounds.slice(0, 2)).toEqual(old.inbounds);
-  expect(next.inbounds).toHaveLength(4);
-  expect(next.inbounds[2]).toEqual({ ...old.inbounds[0], tag: 'ss-isp-in', listen_port: 13839 });
-  expect(next.inbounds[3]).toEqual({ ...old.inbounds[1], tag: 'vless-reality-isp-in', listen_port: 18444 });
+  expect(next.inbounds).toEqual(old.inbounds);
+  expect(next.inbounds).toHaveLength(2);
   expect(next.outbounds!.slice(0, -1)).toEqual(old.outbounds);
   expect(outbound()).toEqual({ type: 'socks', tag: 'isp-socks', server: '198.51.100.7', server_port: 1080, version: '5', username, password });
-  expect(next.route!.rules).toEqual([{ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' }]);
+  expect(next.route).toEqual(loadSingboxTemplate(root).route);
   expect(mode(join(h.dir, 'config.json'))).toBe(0o600);
 });
 
@@ -172,7 +175,7 @@ it("AC8[add: validates with the container's own image, restarts once, verifies] 
   ok(h.ispSpawn(['--add', '--yes'], freshLines()));
   expect(h.log()).toMatch(/docker run .*ghcr.io\/sagernet\/sing-box:stub check -c \/etc\/sing-box\/config.json/);
   expect(h.upCount()).toBe(1);
-  expect(h.log()).toContain(`docker compose --project-directory ${h.dir} up -d --force-recreate`);
+  expect(h.log()).toContain(`docker compose --project-directory ${realpathSync(h.dir)} up -d --force-recreate`);
   expect(h.log().indexOf('docker run')).toBeLessThan(h.log().indexOf(' up -d'));
   expect(h.log()).toContain('exec -T sing-box sing-box check');
   expect(h.log()).toContain('curl -K -');
@@ -181,12 +184,13 @@ it("AC8[add: validates with the container's own image, restarts once, verifies] 
 });
 
 it('AC8[add: makes a private backup of all three files first] AC7 backups preserve the original bytes with private directories', async () => {
-  const texts = ['config.json', 'clash.yaml', '.env'].map(h.read); ok(await h.add());
+  const texts = ['config.json', '.env'].map(h.read); ok(await h.add());
   expect(h.backups()).toHaveLength(1);
   const backup = h.backups()[0];
   expect(mode(join(h.dir, '.isp-backup'))).toBe(0o700); expect(mode(backup)).toBe(0o700);
-  for (const [i, file] of ['config.json', 'clash.yaml', '.env'].entries())
+  for (const [i, file] of ['config.json', '.env'].entries())
     expect(read(backup, file) === texts[i]).toBe(true);
+  expect(existsSync(join(backup, 'clash.yaml'))).toBe(false);
 });
 
 it('AC8[add: a run that changes nothing makes no backup] AC17 repeated no-op adds preserve all bytes', async () => {
@@ -204,7 +208,8 @@ it('AC8[add: keeps five backups, and the oldest one (the original files) is neve
 
 it('AC8[add: output carries the UDP caveat and the no-fallback note] AC14 protocol limitations are printed', async () => {
   const r = await h.add(); ok(r);
-  expect(r.stdout).toContain('UDP ASSOCIATE'); expect(r.stdout).toContain('never fall back');
+  expect(r.stdout).toContain('Only TCP');
+  expect(r.stdout).toMatch(/domain routing.*UDP.*separate verification/);
 });
 
 it('AC8[add: IPv6 entry address] AC14 IPv6 SOCKS address and egress are supported', async () => {
@@ -216,25 +221,28 @@ it('AC8[add: IPv6 entry address] AC14 IPv6 SOCKS address and egress are supporte
 it('AC8[add: existing route rules and other config keys survive add and remove] AC17 before/after diff contains only ISP additions', async () => {
   const config = h.config();
   config.inbounds.push({ type: 'direct', tag: 'custom-in', listen_port: 4567, custom: true });
-  config.route = { final: 'direct', rules: [{ domain: ['example.com'], outbound: 'direct' }] };
+  config.route = { final: 'direct', rules: [{ action: 'sniff' }, { domain: ['example.com'], outbound: 'direct' }] };
   config.log = { level: 'warn' }; config.custom = { preserved: 'user edit' }; writeConfig(config);
-  const before = h.snapshot(); ok(await h.add()); const next = h.config();
+  const clientBefore = h.read('clash.yaml'); ok(await h.add()); const next = h.config();
   expect(next.inbounds.slice(0, 3)).toEqual(config.inbounds);
   expect(next.route!.rules![0]).toEqual(config.route.rules![0]);
   expect(next.route!.final).toBe('direct'); expect(next.log).toEqual(config.log); expect(next.custom).toEqual(config.custom);
   const stripped = structuredClone(next);
-  stripped.inbounds = stripped.inbounds.slice(0, 3); stripped.outbounds!.pop(); stripped.route!.rules!.pop();
+  stripped.outbounds!.pop(); stripped.route!.rules = config.route.rules;
   expect(stripped).toEqual(config);
-  expect(addedLines(JSON.stringify(config, null, 2), h.read('config.json'))).toContain('"tag": "ss-isp-in"');
-  ok(await h.remove()); expect(h.snapshot()).toBe(before);
+  expect(addedLines(JSON.stringify(config, null, 2), h.read('config.json'))).toContain('"tag": "isp-socks"');
+  // Later edits must survive targeted removal without relying on the old clean backup.
+  next.route!.rules!.push({ domain: ['later.test'], outbound: 'direct' }); next.custom = { preserved: 'later edit' }; writeConfig(next);
+  ok(await h.remove());
+  expect(h.config()).toEqual({ ...config, custom: { preserved: 'later edit' }, route: { ...config.route, rules: [...config.route.rules!, { domain: ['later.test'], outbound: 'direct' }] } });
+  expect(h.read('clash.yaml')).toBe(clientBefore);
 });
 
-it('AC8[clash: only marker blocks are added; the clones differ from the originals only in name and port] AC17 AST clones need no marker blocks', async () => {
-  const old = yaml(); ok(await h.add()); const next = yaml();
-  expect(next.proxies).toHaveLength(4);
-  expect(next.proxies[2]).toEqual({ ...old.proxies[0], name: ispNames[0], port: 13839 });
-  expect(next.proxies[3]).toEqual({ ...old.proxies[1], name: ispNames[1], port: 18444 });
-  expect(h.read('clash.yaml')).not.toContain('BEGIN my-singbox-isp');
+it('AC8[clash: only marker blocks are added; the clones differ from the originals only in name and port] AC17 client bytes and permissions remain untouched', async () => {
+  const old = h.read('clash.yaml'), oldMode = mode(join(h.dir, 'clash.yaml'));
+  ok(await h.add()); expect(h.read('clash.yaml')).toBe(old);
+  expect(yaml().proxies).toHaveLength(2);
+  expect(mode(join(h.dir, 'clash.yaml'))).toBe(oldMode);
 });
 
 it('AC8[clash: both ISP nodes are added to the existing Proxy group; no new group; the rest is untouched] AC4 AC17 comments and user additions survive', async () => {
@@ -245,19 +253,17 @@ it('AC8[clash: both ISP nodes are added to the existing Proxy group; no new grou
   h.write('clash.yaml', '# user header\n' + h.read('clash.yaml').replace('rules:', '# user rules\nrules:') + '# user footer\n');
   const before = h.read('clash.yaml'); ok(await h.add()); const next = yaml();
   expect(next.proxies.slice(0, 3)).toEqual(doc.proxies);
-  expect(next['proxy-groups']).toEqual([{ ...doc['proxy-groups'][0], proxies: [...doc['proxy-groups'][0].proxies, ...ispNames] }]);
+  expect(next['proxy-groups']).toEqual(doc['proxy-groups']);
   expect(next.rules).toEqual(doc.rules);
   for (const comment of ['# user header', '# user rules', '# user footer']) expect(h.read('clash.yaml')).toContain(comment);
-  const stripped = structuredClone(next); stripped.proxies.splice(-2); stripped['proxy-groups'][0].proxies.splice(-2);
-  expect(stripped).toEqual(doc);
-  const additions = addedLines(before, h.read('clash.yaml'));
-  expect(additions).toContain('shadowsocks-isp'); expect(additions).toContain('vless-reality-isp');
+  expect(next).toEqual(doc);
+  expect(h.read('clash.yaml')).toBe(before);
   expect(read(h.dir, 'templates/clash.yaml.template')).toBe(read(root, 'templates/clash.yaml.template'));
 });
 
-it('AC8[clash: the Proxy group keeps its order, the ISP names follow its last entry] AC4 group order is stable', async () => {
+it('AC8[clash: the Proxy group keeps its order, the ISP names follow its last entry] AC4 group order is untouched by server routing', async () => {
   const old = yaml()['proxy-groups'][0].proxies; ok(await h.add());
-  expect(yaml()['proxy-groups'][0].proxies).toEqual([...old, ...ispNames]);
+  expect(yaml()['proxy-groups'][0].proxies).toEqual(old);
 });
 
 it('AC8[clash: add is idempotent; re-running changes nothing and never duplicates the entries] AC17 credentials update without rewriting Clash', async () => {
@@ -265,45 +271,44 @@ it('AC8[clash: add is idempotent; re-running changes nothing and never duplicate
   for (let i = 0; i < 3; i++) ok(await h.keep());
   ok(await h.add(address, 'other-user', 'other-pass'));
   expect(h.read('clash.yaml')).toBe(after);
-  expect(yaml().proxies.map((p: { name: string }) => p.name)).toEqual(['shadowsocks', 'vless-reality', ...ispNames]);
+  expect(yaml().proxies.map((p: { name: string }) => p.name)).toEqual(['shadowsocks', 'vless-reality']);
 });
 
 it('AC8[clash: remove deletes the nodes and their Proxy entries and restores clash.yaml byte for byte] AC7 repeated cycles restore original bytes', async () => {
   for (let i = 0; i < 2; i++) { ok(await h.add()); ok(await h.remove()); expect(h.snapshot()).toBe(original); }
 });
 
-it("AC8[clash: a Proxy group that is missing or has no proxies list is refused, nothing written] AC4 missing and malformed groups fail", async () => {
+it("AC8[clash: a Proxy group that is missing or has no proxies list is refused, nothing written] AC4 missing and malformed client groups do not block server changes", async () => {
   const originalYaml = yaml();
   for (const kind of ['missing', 'no list']) {
     const doc = structuredClone(originalYaml);
     if (kind === 'missing') doc['proxy-groups'][0].name = 'Main'; else delete doc['proxy-groups'][0].proxies;
-    writeYaml(doc); const before = h.snapshot();
-    failed(await h.add(), "'Proxy' proxy group"); nothingWritten(before);
+    writeYaml(doc); const before = h.read('clash.yaml');
+    ok(await h.add()); ok(await h.remove()); expect(h.read('clash.yaml')).toBe(before);
   }
 });
 
 it('AC8[clash: parses as YAML; the ISP nodes are in the Proxy group, nothing else changed] AC4 parsed document preserves all other sections', async () => {
   const old = yaml(); ok(await h.add()); const next = yaml();
   expect(next['proxy-groups']).toHaveLength(1);
-  expect(next['proxy-groups'][0].proxies).toEqual([...old['proxy-groups'][0].proxies, ...ispNames]);
-  next.proxies.splice(-2); next['proxy-groups'][0].proxies.splice(-2);
+  expect(next['proxy-groups'][0].proxies).toEqual(old['proxy-groups'][0].proxies);
   expect(next).toEqual(old);
 });
 
-it('AC8[clash: old node names (My-sing-box / My-VLESS-Reality) are refused with a regenerate hint, nothing written] AC17 legacy nodes fail before writes', async () => {
+it('AC8[clash: old node names (My-sing-box / My-VLESS-Reality) are refused with a regenerate hint, nothing written] AC17 legacy client names remain untouched', async () => {
   h.write('clash.yaml', h.read('clash.yaml').replaceAll('shadowsocks', 'My-sing-box').replaceAll('vless-reality', 'My-VLESS-Reality'));
-  const before = h.snapshot(); failed(await h.add(), 'my-singbox conf-clash'); nothingWritten(before);
+  const before = h.read('clash.yaml'); ok(await h.add()); ok(await h.remove()); expect(h.read('clash.yaml')).toBe(before);
 });
 
-it('AC8[clash: a missing source node is refused, nothing written] AC17 both prototypes are required', async () => {
+it('AC8[clash: a missing source node is refused, nothing written] AC17 missing client prototypes do not block server changes', async () => {
   const old = yaml();
   for (let i = 0; i < 2; i++) {
     const doc = structuredClone(old); doc.proxies.splice(i, 1); writeYaml(doc);
-    const before = h.snapshot(); failed(await h.add(), 'my-singbox conf-clash'); nothingWritten(before);
+    const before = h.read('clash.yaml'); ok(await h.add()); ok(await h.remove()); expect(h.read('clash.yaml')).toBe(before);
   }
 });
 
-it('AC8[clash: unbalanced markers are refused, nothing written] AC17 shell marker comments are ordinary YAML comments', async () => {
+it('AC8[clash: unbalanced markers are refused, nothing written] AC17 marker comments remain untouched', async () => {
   h.write('clash.yaml', h.read('clash.yaml') + '# BEGIN my-singbox-isp\n'); const before = h.snapshot();
   ok(await h.add()); expect(h.read('clash.yaml')).toContain('# BEGIN my-singbox-isp');
   const added = h.snapshot(); ok(await h.keep()); expect(h.snapshot()).toBe(added);
@@ -312,7 +317,7 @@ it('AC8[clash: unbalanced markers are refused, nothing written] AC17 shell marke
 
 it('AC8[clash: no clash.yaml is not fatal, config is still updated and a hint is printed] AC14 server-only add is supported', async () => {
   rmSync(join(h.dir, 'clash.yaml')); const before = h.snapshot(); const r = await h.add(); ok(r);
-  expect(r.stderr).toContain('clash.yaml does not exist'); expect(r.stderr).toContain('my-singbox conf-clash'); expect(outbound().tag).toBe('isp-socks');
+  expect(outbound().tag).toBe('isp-socks');
   expect(existsSync(join(h.dir, 'clash.yaml'))).toBe(false);
   ok(await h.remove()); expect(h.snapshot()).toBe(before);
 });
@@ -327,24 +332,30 @@ it('AC8[add twice with the same values typed again is byte-identical] AC17 expli
   expect(h.snapshot()).toBe(before); expect(h.upCount()).toBe(1); expect(h.backups()).toHaveLength(1);
 });
 
-it('AC8[add with new credentials replaces the old ones in place] AC17 updates keep custom ISP keys', async () => {
+it('AC8[add with new credentials replaces the old ones in place] AC17 updates preserve custom outbound and domain rules', async () => {
   ok(await h.add()); const config = h.config();
   config.outbounds!.find((o) => o.tag === 'isp-socks')!.custom = 'keep';
-  config.inbounds[2].custom = true; writeConfig(config);
+  config.inbounds[0].custom = true;
+  config.route!.rules!.splice(1, 0, { domain_suffix: ['custom.test'], outbound: 'isp-socks', network: 'tcp' });
+  const routeBefore = structuredClone(config.route); writeConfig(config);
   h.set('egress_ip', '192.0.2.9\n'); ok(await h.add('192.0.2.9:2080', 'other-user', 'other-pass'));
   expect(outbound()).toMatchObject({ server: '192.0.2.9', server_port: 2080, custom: 'keep' });
   expect(outbound().password === 'other-pass').toBe(true);
   expect(h.config().outbounds!.filter((o) => o.tag === 'isp-socks')).toHaveLength(1);
-  expect(h.config().inbounds[2].custom).toBe(true);
+  expect(h.config().inbounds[0].custom).toBe(true);
+  expect(h.config().route).toEqual(routeBefore);
   expect(h.read('.env').match(/^ISP_SOCKS_ADDR=/gm)).toHaveLength(1);
-  ok(await h.remove()); expect(h.snapshot()).toBe(original);
+  ok(await h.remove()); expect(h.config().inbounds[0].custom).toBe(true);
+  expect(h.config().outbounds).toEqual([{ type: 'direct', tag: 'direct' }]);
 });
 
-it('AC8[add then remove restores config.json, clash.yaml and .env byte for byte] AC7 SHA-256 proves normal and hand-formatted restores', async () => {
+it('AC8[add then remove restores config.json, clash.yaml and .env byte for byte] AC7 targeted removal preserves semantics and unmanaged bytes', async () => {
   for (const handFormatted of [false, true]) {
     if (handFormatted) { h = await setupIsp(); h.write('config.json', '\n' + JSON.stringify(h.config(), null, '\t') + '\n\n'); }
-    const before = h.snapshot(); ok(await h.add()); ok(await h.remove());
-    expect(h.snapshot()).toBe(before); expect(h.upCount()).toBe(2);
+    const config = h.config(), env = h.read('.env'), clash = h.read('clash.yaml');
+    ok(await h.add()); ok(await h.remove());
+    expect(h.config()).toEqual(config); expect(h.read('.env')).toBe(env); expect(h.read('clash.yaml')).toBe(clash);
+    expect(h.upCount()).toBe(2);
   }
 });
 
@@ -360,10 +371,11 @@ it('AC8[remove validates, restarts and verifies like add] AC14 built remove smok
   expect(h.read('state/last-check-config')).not.toContain('isp-socks'); expect(h.snapshot()).toBe(original);
 });
 
-it('AC8[remove keeps unrelated lines the user added to .env] AC7 restores clean backup and saves later user edits for recovery', async () => {
+it('AC8[remove keeps unrelated lines the user added to .env] AC7 targeted removal keeps later user edits and saves transaction state', async () => {
   ok(await h.add()); h.write('.env', h.read('.env') + '# my note\nCUSTOM_NOTE=1\n');
   const edited = h.read('.env'); ok(await h.remove());
-  expect(h.snapshot()).toBe(original);
+  expect(h.read('.env')).toContain('# my note\nCUSTOM_NOTE=1\n');
+  expect(h.read('.env')).not.toMatch(/^ISP_SOCKS_/m);
   expect(read(h.backups().at(-1)!, '.env') === edited).toBe(true);
 });
 
@@ -409,16 +421,18 @@ it("AC8[failure paths: a rejected candidate config shows sing-box's message] AC1
   h.switch('fail_check'); failed(await h.add(), 'config check failed'); nothingWritten();
 });
 
-it('AC8[failure paths: the ISP port is already taken by something else] AC14 all ISP listener conflicts are refused', async () => {
+it('AC8[failure paths: the ISP port is already taken by something else] AC14 historical ports are unrelated to new ISP routing', async () => {
   for (const listener of ['tcp 13839', 'udp 13839', 'tcp 18444']) {
     h.set('listeners', cleanListeners + listener + '\n'); const before = h.snapshot();
-    failed(await h.add(), 'already in use'); nothingWritten(before);
+    ok(await h.add()); expect(h.config().inbounds).toHaveLength(2); ok(await h.remove());
+    h.set('listeners', cleanListeners + listener + '\n'); expect(h.snapshot()).toBe(before);
   }
 });
 
-it('AC8[failure paths: another inbound in config.json already uses an ISP port] AC14 config port conflict is refused', async () => {
+it('AC8[failure paths: another inbound in config.json already uses an ISP port] AC14 unrelated legacy-port inbounds are preserved', async () => {
   const c = h.config(); c.inbounds.push({ type: 'direct', tag: 'other', listen_port: 18444 }); writeConfig(c);
-  const before = h.snapshot(); failed(await h.add(), '18444'); nothingWritten(before);
+  ok(await h.add()); expect(h.config().inbounds).toEqual(c.inbounds);
+  ok(await h.remove()); expect(h.config().inbounds).toEqual(c.inbounds);
 });
 
 it('AC8[failure paths: config.json without ss-in or vless-reality-in is refused] AC14 missing inbound prototypes are refused', async () => {
@@ -525,20 +539,61 @@ it('AC8[config.json not writable: fails early with a clear error, writes nothing
   finally { chmodSync(join(h.dir, 'config.json'), 0o600); }
 });
 
-it('AC8[notice: a successful add prints the complete allow-the-ports notice on stdout] AC14 complete add notice', async () => { addNotice(await h.add()); });
-it('AC8[notice: a no-change re-run of add prints it again] AC14 idempotent add notice', async () => { ok(await h.add()); addNotice(await h.keep()); });
-it('AC8[notice: a successful remove prints the ports-can-be-closed note] AC14 complete remove notice', async () => { ok(await h.add()); removeNotice(await h.remove()); expect(h.snapshot()).toBe(original); });
-it('AC8[notice: remove with nothing configured still prints the note] AC14 no-op remove notice', async () => { removeNotice(await h.remove()); nothingWritten(); });
+it('AC14 add reports server route and final outbound without a migration notice', async () => { addNotice(await h.add()); });
+it('AC14 no-op add reports server route and final outbound without a migration notice', async () => { ok(await h.add()); addNotice(await h.keep()); });
+it('AC14 removal reports preserved direct final outbound without a migration notice', async () => { ok(await h.add()); removeNotice(await h.remove()); expect(h.snapshot()).toBe(original); });
+it('AC14 no-op removal reports no configured ISP without a migration notice', async () => { removeNotice(await h.remove()); nothingWritten(); });
 
-it('AC8[notice: not printed when the add fails, is declined or is rolled back] AC14 no success notice on add failure', async () => {
+it('AC14 add failures, declines and rollbacks never report success', async () => {
   for (const name of ['break_isp', 'fail_check'] as const) {
-    h.switch(name); const r = await h.add(); failed(r); expect(r.stdout).not.toContain('ACTION REQUIRED'); h.switch(name, false);
+    h.switch(name); const r = await h.add(); failed(r); expect(r.stdout).not.toContain('ISP outbound is configured'); h.switch(name, false);
   }
-  const r = await h.ispRun(['--add'], [...freshLines(), 'n']); failed(r); expect(r.stdout).not.toContain('ACTION REQUIRED');
+  const r = await h.ispRun(['--add'], [...freshLines(), 'n']); failed(r); expect(r.stdout).not.toContain('ISP outbound is configured');
 });
 
-it('AC8[notice: not printed when a remove is rolled back] AC14 no success notice on remove failure', async () => {
-  ok(await h.add()); h.switch('break_clean'); const r = await h.remove(); failed(r); expect(r.stdout).not.toContain('no longer used');
+it('AC14 rolled-back removal never reports success', async () => {
+  ok(await h.add()); h.switch('break_clean'); const r = await h.remove(); failed(r); expect(r.stdout).not.toContain('targeted rules removed');
+});
+
+it.each(['add', 'remove'])('AC14 successful legacy listener migration on %s reports regeneration once and preserves legacy client bytes', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  legacyListeners();
+  const doc = yaml();
+  doc.proxies.push({ ...doc.proxies[0], name: 'shadowsocks-isp', port: 13839 },
+    { ...doc.proxies[1], name: 'vless-reality-isp', port: 18444 });
+  doc['proxy-groups'][0].proxies.push('shadowsocks-isp', 'vless-reality-isp');
+  writeYaml(doc);
+  const clientBefore = h.read('clash.yaml');
+  const result = action === 'add' ? await h.add() : await h.remove(); ok(result);
+  expect((result.stdout + result.stderr).split('\n').filter((line) => migrationNotice.test(line))).toHaveLength(1);
+  expect(result.stdout + result.stderr).toMatch(/13839.*18444/);
+  expect(result.stdout + result.stderr).toMatch(/clos/i);
+  expect(h.config().inbounds.map((inbound) => inbound.tag)).toEqual(['ss-in', 'vless-reality-in']);
+  expect(h.read('clash.yaml')).toBe(clientBefore);
+  if (action === 'add') {
+    expect(h.config().route).toEqual(loadSingboxTemplate(root).route);
+    addNotice(await h.keep());
+  } else removeNotice(await h.remove());
+});
+
+it.each(['add', 'remove'])('AC14 failed or declined legacy migration on %s never prints a migration notice', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  legacyListeners();
+  const before = h.snapshot();
+  for (const failure of ['fail_check', action === 'add' ? 'break_isp' : 'break_clean'] as const) {
+    h.switch(failure); const result = action === 'add' ? await h.add() : await h.remove();
+    failed(result); noMigrationNotice(result); expect(h.snapshot()).toBe(before); h.switch(failure, false);
+  }
+  const declined = await h.ispRun([`--${action}`], action === 'add' ? [...freshLines(), 'n'] : ['n']);
+  failed(declined, 'Aborted'); noMigrationNotice(declined); expect(h.snapshot()).toBe(before);
+});
+
+it.each(['add', 'remove'])('AC14 removing only a stale legacy route on %s does not report listener migration', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  const config = h.config();
+  config.route!.rules!.push({ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' });
+  writeConfig(config);
+  const result = action === 'add' ? await h.add() : await h.remove(); ok(result); noMigrationNotice(result);
 });
 
 it('AC8[no firewall is touched, nothing is installed and sudo is never called, in any flow] AC9 system tripwires cover all flows', async () => {
@@ -565,17 +620,17 @@ it('AC8[temp files: leftovers from an older run are swept at the start of the ne
 });
 
 it('AC8[add again with the ISP config present but the service on the old config: restarts once, verifies, then succeeds] AC14 unhealthy idempotent add repairs service', async () => {
-  ok(await h.add()); h.set('listeners', cleanListeners); h.clearLog(); const r = await h.keep(); ok(r);
-  expect(r.stderr).toContain('Restarting'); expect(h.upCount()).toBe(1); expect(h.read('state/listeners')).toContain('tcp 13839');
+  ok(await h.add()); h.set('status', 'exited\n'); h.set('listeners', ''); h.clearLog(); const r = await h.keep(); ok(r);
+  expect(r.stderr).toContain('Restarting'); expect(h.upCount()).toBe(1); expect(h.read('state/listeners')).toBe(cleanListeners);
 });
 it('AC8[add again with the ISP config present and the service still unhealthy after one restart: exit non-zero, nothing reported active, no system change] AC9 failed repair preserves files', async () => {
   ok(await h.add()); const files = ['config.json', 'clash.yaml', '.env'].map(h.read);
-  h.switch('break_isp'); h.set('listeners', cleanListeners); h.clearLog(); const r = await h.keep();
-  failed(r, 'still does not run the ISP outbound'); expect(r.stdout).not.toContain('ISP outbound is active');
+  h.switch('break_isp'); h.set('status', 'exited\n'); h.set('listeners', ''); h.clearLog(); const r = await h.keep();
+  failed(r, 'still not healthy'); expect(r.stdout).not.toContain('ISP outbound is configured');
   expect(['config.json', 'clash.yaml', '.env'].map(h.read)).toEqual(files); expect(h.upCount()).toBe(1); expect(h.backups()).toHaveLength(1);
 });
 it('AC8[add again, unhealthy, answering n to the restart question: nothing changes] AC14 declined repair preserves service state', async () => {
-  ok(await h.add()); h.set('listeners', cleanListeners); h.clearLog(); const before = h.snapshot();
+  ok(await h.add()); h.set('status', 'exited\n'); h.set('listeners', ''); h.clearLog(); const before = h.snapshot();
   failed(await h.ispRun(['--add'], ['', '', '', '', 'n']), 'Aborted'); expect(h.snapshot()).toBe(before); expect(h.upCount()).toBe(0);
 });
 
@@ -609,8 +664,80 @@ it('AC8[add then remove is byte-exact for a .env with trailing blank lines] AC7 
   h.write('.env', h.read('.env') + '\n\n'); const before = h.snapshot(); ok(await h.add()); ok(await h.remove()); expect(h.snapshot()).toBe(before);
 });
 
-it('AC7 remove refuses ISP configuration without a clean backup', async () => {
-  ok(await h.add()); rmSync(join(h.dir, '.isp-backup'), { recursive: true }); const before = h.snapshot();
-  failed(await h.remove(), 'No backup from before the ISP outbound was added');
-  expect(h.snapshot()).toBe(before); expect(h.backups()).toEqual([]); expect(h.upCount()).toBe(1);
+it('AC7 env installation failure after config replacement restores bytes and modes', async () => {
+  const actual = await vi.importActual<typeof import('../../src/core/isp.js')>('../../src/core/isp.js');
+  chmodSync(join(h.dir, 'config.json'), 0o640); chmodSync(join(h.dir, '.env'), 0o640);
+  const before = h.snapshot(); let installedConfig = false;
+  vi.mocked(installFile).mockImplementationOnce((dest, data, projectDir) => {
+    expect(dest).toBe(join(h.dir, 'config.json')); actual.installFile(dest, data, projectDir); installedConfig = true;
+  }).mockImplementationOnce((dest) => {
+    expect(dest).toBe(join(h.dir, '.env')); expect(installedConfig).toBe(true);
+    expect(h.config().outbounds!.some((o) => o.tag === 'isp-socks')).toBe(true);
+    throw new Error('fixture env install failed');
+  });
+  failed(await h.add(), 'fixture env install failed');
+  expect(h.snapshot()).toBe(before);
+  expect(mode(join(h.dir, 'config.json'))).toBe(0o640); expect(mode(join(h.dir, '.env'))).toBe(0o640);
+  expect(h.upCount()).toBe(1); expect(existsSync(join(h.dir, '.isp.lock'))).toBe(false);
+});
+
+it('AC7 failed remove restores existing config and env while leaving Clash absent', async () => {
+  ok(await h.add()); rmSync(join(h.dir, 'clash.yaml'));
+  h.write('.env', h.read('.env') + '# preserve rollback env\n');
+  const before = h.snapshot(); h.switch('break_clean'); failed(await h.remove(), 'Rolling back');
+  expect(h.snapshot()).toBe(before);
+  expect(h.read('.env')).toContain('# preserve rollback env\n');
+  expect(existsSync(join(h.dir, 'clash.yaml'))).toBe(false);
+});
+
+it('AC7 remove works without a historical clean backup and preserves current user edits', async () => {
+  ok(await h.add()); rmSync(join(h.dir, '.isp-backup'), { recursive: true });
+  const config = h.config(); config.custom = { later: true };
+  config.route!.rules!.push({ domain: ['later.test'], outbound: 'direct' }); writeConfig(config);
+  h.write('.env', h.read('.env') + '# later note\n'); ok(await h.remove());
+  expect(h.config().custom).toEqual({ later: true });
+  expect(h.config().route!.rules).toEqual([{ action: 'sniff' }, { domain: ['later.test'], outbound: 'direct' }]);
+  expect(h.read('.env')).toContain('# later note\n');
+  expect(h.backups()).toHaveLength(1); expect(h.upCount()).toBe(2);
+});
+
+it('ISP commands ignore unreadable malformed Clash and preserve its mode through success and rollback', async () => {
+  const file = join(h.dir, 'clash.yaml'), text = 'proxies: [malformed legacy client';
+  h.write('clash.yaml', text); chmodSync(file, 0o000);
+  try {
+    ok(await h.add()); ok(await h.keep()); ok(await h.remove());
+    h.switch('break_isp'); failed(await h.add(), 'Rolling back');
+    expect(mode(file)).toBe(0o000);
+  } finally { chmodSync(file, 0o600); }
+  expect(h.read('clash.yaml')).toBe(text);
+});
+
+it('CLI uses active template defaults only when no custom ISP routes exist', async () => {
+  const template = JSON.parse(h.read('templates/config.json.template'));
+  const customRule = { domain_suffix: ['active-template.test'], outbound: 'isp-socks', network: 'tcp' };
+  template.route.rules = [{ action: 'sniff' }, customRule];
+  h.write('templates/config.json.template', JSON.stringify(template));
+  ok(await h.add()); expect(h.config().route!.rules).toEqual([{ action: 'sniff' }, customRule]);
+  const before = h.config().route;
+  h.write('templates/config.json.template', '{invalid template');
+  ok(await h.add(address, 'updated-user', 'updated-password'));
+  expect(h.config().route).toEqual(before);
+  ok(await h.remove());
+  const filesBefore = h.snapshot(); failed(await h.add()); expect(h.snapshot()).toBe(filesBefore);
+});
+
+it('CLI preserves an ISP final route without loading template defaults', async () => {
+  ok(await h.add());
+  const config = h.config(); config.route = { rules: [{ action: 'sniff' }], final: 'isp-socks', custom: true };
+  writeConfig(config); h.write('templates/config.json.template', '{invalid template');
+  const result = await h.keep(); ok(result); noMigrationNotice(result);
+  expect(h.config().route).toEqual(config.route);
+});
+
+it.each(['add', 'remove'])('CLI refuses unsupported legacy references before %s writes any managed file', async (action) => {
+  if (action === 'remove') ok(await h.add());
+  const config = h.config(); config.custom = { inbound: 'ss-isp-in' }; writeConfig(config);
+  const before = h.snapshot(), backups = h.backups(), restarts = h.upCount();
+  failed(action === 'add' ? await h.add() : await h.remove());
+  expect(h.snapshot()).toBe(before); expect(h.backups()).toEqual(backups); expect(h.upCount()).toBe(restarts);
 });

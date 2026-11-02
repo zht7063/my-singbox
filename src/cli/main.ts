@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { run } from './commands.js';
 import { realSystem } from '../doctor/system.js';
 import { createInterface } from 'node:readline';

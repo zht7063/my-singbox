@@ -7,26 +7,22 @@ import {
   fixtureModel,
   creds,
 } from './helpers/fixtures.js';
-it('builds ordered direct nodes and shared ISP credentials', () => {
-  const off = fixtureModel();
-  expect(
-    off.nodes.map((n) => [n.name, n.inbound.tag, n.inbound.port, n.egress]),
-  ).toEqual([
-    ['shadowsocks', 'ss-in', 8388, 'direct'],
-    ['vless-reality', 'vless-reality-in', 8443, 'direct'],
+it('builds exactly two protocol nodes independently of ISP credentials', () => {
+  const off = fixtureModel(), on = fixtureModel(true);
+  expect(off.nodes.map((n) => [n.name, n.inbound.tag, n.inbound.port])).toEqual([
+    ['shadowsocks', 'ss-in', 8388],
+    ['vless-reality', 'vless-reality-in', 8443],
   ]);
   expect(off.isp).toBeUndefined();
-  const on = fixtureModel(true);
-  expect(on.nodes.map((n) => n.name)).toEqual([
-    'shadowsocks',
-    'vless-reality',
-    'shadowsocks-isp',
-    'vless-reality-isp',
-  ]);
-  expect(on.nodes[2].creds).toEqual(off.nodes[0].creds);
-  expect(on.nodes[3].creds).toEqual(off.nodes[1].creds);
+  expect(on.nodes).toEqual(off.nodes);
   expect(on.isp?.addr).toBe('[2001:db8::1]:1080');
-  expect(on.nodes.slice(2).map((n) => n.inbound.port)).toEqual([13839, 18444]);
+  for (const node of on.nodes) expect(node).not.toHaveProperty('egress');
+});
+
+it.each(['ISP_SOCKS_USER=only-user', 'ISP_SOCKS_ADDR=invalid', 'ISP_SOCKS_EGRESS_IP=invalid'])('client model ignores incomplete or invalid ISP settings: %s', (line) => {
+  const model = buildModel(parseEnv(fixtureText() + line + '\n'), { target: 'client' });
+  expect(model.nodes).toEqual(buildModel(fixtureEnv(), { target: 'client' }).nodes);
+  expect(model.isp).toBeUndefined();
 });
 
 it('accepts absent or empty optional ISP settings', () => {

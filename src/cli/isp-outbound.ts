@@ -1,23 +1,18 @@
-import {
-  accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync,
-  statSync, writeFileSync,
-} from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { IO } from './commands.js';
 import type { IspSocks } from '../model.js';
-import type { SingboxConfig } from '../core/render-config.js';
+import { OUT_TAG } from '../model.js';
+import { loadSingboxTemplate, type SingboxConfig } from '../core/render-config.js';
 import {
-  SS_PORT, VLESS_PORT, SS_ISP_PORT, VLESS_ISP_PORT, SS_ISP_TAG, VLESS_ISP_TAG,
-  NODE_SS_ISP, NODE_VLESS_ISP,
-} from '../model.js';
-import {
-  IspError, MANAGED_FILES, GROUP_MAIN, checkIspConfig, configHasIsp,
-  envGet, envHasIsp, clashHasIsp, addIspToConfig, addIspToClash,
-  makeTmpPath, installFile, makeBackup, findCleanBackup, restoreBackup,
+  IspError, MANAGED_FILES, checkIspConfig,
+  envGet, addIspToConfig, removeIspFromConfig,
+  makeTmpPath, installFile, makeBackup, restoreBackup,
   sweepStaleTmp, withLock,
 } from '../core/isp.js';
-import { envUnquote, envWithIsp } from '../core/env.js';
+import { envUnquote, envWithIsp, envWithoutIsp } from '../core/env.js';
+import { isIspRule, isLegacyIspRule } from '../core/routing.js';
 import { isIpv4, isIpv6Strict, parseIspAddr, validCred } from '../core/validate.js';
 import { IspService } from '../core/isp-service.js';
 
@@ -43,7 +38,7 @@ export async function ispOutbound(
   const isFile = (file: string) => existsSync(file) && statSync(file).isFile();
   const tempFiles: string[] = [];
   let backupDir: string;
-  let rollbackArmed = false;
+  let rollbackArmed = false, rollbackNeedsRestart = false;
   let action = opts.action;
   const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((signal, i) => {
     const handler = () => {
@@ -77,7 +72,7 @@ export async function ispOutbound(
   };
   const confirmRestart = async () => {
     if (opts.yes) return;
-    info('This restarts sing-box. Connections on 8388 and 8443 drop for a few seconds.');
+    info('This restarts sing-box. Connections on its configured ports drop for a few seconds.');
     if (!['y', 'Y'].includes(await ask('Continue? [y/N] ')))
       throw new IspError('Aborted. Nothing was changed.');
   };
@@ -102,32 +97,66 @@ export async function ispOutbound(
     checkIspConfig(config);
     return { text, config };
   };
-  const saveBackup = () => {
-    backupDir = makeBackup(projectDir);
-    info(`Backup saved in ${backupDir}`);
-  };
   const rollback = async () => {
     rollbackArmed = false;
     warn('Rolling back to the previous configuration...');
-    restoreBackup(projectDir, backupDir);
-    // Rollback must still run after the run's signal has been aborted.
-    const previous = new IspService(serviceIO);
-    if (!await previous.recreate()) {
-      await previous.showLogs();
-      throw new IspError(`Rollback failed to restart sing-box. Previous files are restored from ${backupDir}; run: docker compose up -d --force-recreate`);
+    restoreBackup(projectDir, backupDir, MANAGED_FILES);
+    if (rollbackNeedsRestart) {
+      // Rollback must still run after the run's signal has been aborted.
+      const previous = new IspService(serviceIO);
+      if (!await previous.recreate()) {
+        await previous.showLogs();
+        throw new IspError(`Rollback failed to restart sing-box. Previous files are restored from ${backupDir}; run: docker compose up -d --force-recreate`);
+      }
+      if (!await previous.verifyService()) {
+        await previous.showLogs();
+        throw new IspError('Rollback restored the files, but sing-box is not healthy. Check: docker compose logs sing-box');
+      }
     }
-    if (!await previous.verifyService(false)) {
-      await previous.showLogs();
-      throw new IspError('Rollback restored the files, but sing-box is not healthy. Check: docker compose logs sing-box');
+    io.stderr('Rollback complete. Previous server files are restored.\n');
+  };
+
+  const apply = async (
+    image: string, original: { text: string; config: SingboxConfig },
+    config: SingboxConfig, envText: string, envCandidate: string,
+  ): Promise<boolean> => {
+    const changed = !isDeepStrictEqual(config, original.config);
+    const envChanged = envCandidate !== envText;
+    const configText = changed ? JSON.stringify(config, null, 2) + '\n' : original.text;
+    if (changed) {
+      await validateCandidate(image, candidate(configText));
+      await confirmRestart();
     }
-    io.stderr('Rollback complete. sing-box is running the previous configuration.\n');
+    if (!changed && !envChanged) return false;
+    backupDir = makeBackup(projectDir, MANAGED_FILES);
+    info(`Backup saved in ${backupDir}`);
+    rollbackArmed = true;
+    controller.signal.throwIfAborted();
+    if (changed) {
+      rollbackNeedsRestart = true;
+      installFile(path('config.json'), configText, projectDir);
+    }
+    if (envChanged) installFile(path('.env'), envCandidate, projectDir);
+    controller.signal.throwIfAborted();
+    if ((changed && !await service.recreate()) || !await service.verifyService()) {
+      await service.showLogs();
+      throw new IspError('sing-box did not come up after the ISP change.');
+    }
+    controller.signal.throwIfAborted();
+    rollbackArmed = false;
+    const remainingTags = new Set(config.inbounds.map((inbound) => inbound.tag));
+    const retiredPorts = original.config.inbounds
+      .filter((inbound) => !remainingTags.has(inbound.tag))
+      .map((inbound) => inbound.listen_port);
+    if (retiredPorts.length)
+      info(`Regenerate the client clash.yaml; legacy ISP ports ${retiredPorts.join('/')} can now be closed.`);
+    return true;
   };
 
   const add = async (image: string) => {
     const original = preflightConfig();
     if (!isFile(path('.env')))
       throw new IspError('.env does not exist. Run my-singbox gen-keys first.');
-    if (!configHasIsp(original.config)) await service.portsFree();
     const envText = readFileSync(path('.env'), 'utf8');
     const isp = await collectInputs(envText, ask);
     info('Checking the SOCKS5 proxy (TCP) and its egress IP...');
@@ -138,109 +167,35 @@ export async function ispOutbound(
     if (got.toLowerCase() !== expected.toLowerCase())
       throw new IspError(`Egress IP through the proxy is ${got}, expected ${expected}. If the ISP's egress differs from its entry IP, enter the egress IP when asked. Nothing was changed.`);
     info(`Egress IP through the SOCKS5 proxy: ${got} (matches).`);
-
-    const envCandidate = envWithIsp(envText, { ...isp, egressIp: isp.egressIp ?? '' });
-    candidate(envCandidate);
-    const config = addIspToConfig(original.config, isp);
-    const configText = isDeepStrictEqual(config, original.config)
-      ? original.text : JSON.stringify(config, null, 2) + '\n';
-    const cfgCandidate = candidate(configText);
-    await validateCandidate(image, cfgCandidate);
-    let clashText: string | undefined, clashCandidate: string | undefined;
-    let clashState: string;
-    if (isFile(path('clash.yaml'))) {
-      clashText = readFileSync(path('clash.yaml'), 'utf8');
-      clashCandidate = addIspToClash(clashText, envGet(envText, 'REALITY_PRIVATE_KEY'));
-      candidate(clashCandidate);
-      clashState = `clash.yaml updated (nodes ${NODE_SS_ISP} and ${NODE_VLESS_ISP} added and listed in the ${GROUP_MAIN} group).`;
-    } else {
-      warn('clash.yaml does not exist, so only the server config is changed. After running my-singbox conf-clash, re-run my-singbox isp-outbound --add to add the client nodes.');
-      clashState = 'clash.yaml not found (skipped).';
-    }
-    const changed = configText !== original.text;
-    const envChanged = envCandidate !== envText;
-    const clashChanged = clashCandidate !== clashText;
-    if (changed) await confirmRestart();
-    if (changed || envChanged || clashChanged) saveBackup();
-
-    if (changed) {
-      rollbackArmed = true;
-      installFile(path('config.json'), configText, projectDir);
-      if (!await service.recreate() || !await service.verifyService(true)) {
-        await service.showLogs();
-        await rollback();
-        throw new IspError('The ISP outbound did not come up. The previous configuration was restored.');
-      }
-      rollbackArmed = false;
-    } else {
+    const hasIspPolicy = original.config.route?.final === OUT_TAG ||
+      original.config.route?.rules?.some((rule) => isIspRule(rule) && !isLegacyIspRule(rule));
+    const routeDefaults = hasIspPolicy ? undefined : loadSingboxTemplate(projectDir).route;
+    const config = addIspToConfig(original.config, isp, routeDefaults);
+    const changed = await apply(image, original, config, envText,
+      envWithIsp(envText, { ...isp, egressIp: isp.egressIp ?? '' }));
+    if (!changed) {
       info('config.json already has this ISP outbound.');
-      if (!await service.verifyService(true)) {
-        warn('sing-box is not running the ISP configuration. Restarting it once...');
+      if (!await service.verifyService()) {
+        warn('sing-box is not healthy. Restarting it once...');
         await confirmRestart();
-        if (!await service.recreate() || !await service.verifyService(true)) {
+        if (!await service.recreate() || !await service.verifyService()) {
           await service.showLogs();
-          throw new IspError('sing-box still does not run the ISP outbound after a restart. config.json, .env and clash.yaml were not changed. Check: docker compose logs sing-box');
+          throw new IspError('sing-box is still not healthy after a restart. Server files were not changed.');
         }
       }
     }
-    if (envChanged) installFile(path('.env'), envCandidate, projectDir);
-    if (clashChanged) installFile(path('clash.yaml'), clashCandidate!, projectDir);
-    info(`
-ISP outbound is active.
-  shadowsocks-isp    port ${SS_ISP_PORT} (tcp+udp), tag ${SS_ISP_TAG}
-  vless-reality-isp  port ${VLESS_ISP_PORT} (tcp),    tag ${VLESS_ISP_TAG}
-  ${clashState}
-  Ports ${SS_PORT} and ${VLESS_PORT} are unchanged and still go out directly.
-Notes:
-  - Only TCP was tested. UDP through the ISP (Shadowsocks UDP) works only if the proxy supports SOCKS5 UDP ASSOCIATE.
-  - If the ISP proxy stops working, the ISP nodes fail. They never fall back to a direct connection.
-  - Re-import clash.yaml in your clients to see the new ${NODE_SS_ISP} and ${NODE_VLESS_ISP} nodes in the ${GROUP_MAIN} group.`);
-    portNotice(io, 'add');
+    info('\nISP outbound is configured. config.json route rules decide which traffic uses isp-socks.');
+    info(`Server route.final: ${config.route?.final ?? 'direct'}. Existing rule order is preserved; check for earlier matching rules when customizing routing.`);
+    info('Only TCP through the SOCKS5 proxy was tested; actual domain routing and UDP require separate verification.');
   };
 
   const remove = async (image: string) => {
     const original = preflightConfig();
     const envText = isFile(path('.env')) ? readFileSync(path('.env'), 'utf8') : '';
-    const clashText = isFile(path('clash.yaml')) ? readFileSync(path('clash.yaml'), 'utf8') : '';
-    if (!configHasIsp(original.config) && !envHasIsp(envText) && !clashHasIsp(clashText)) {
-      info('\nNo ISP outbound was configured. Nothing to remove.');
-      portNotice(io, 'remove');
-      return;
-    }
-    const cleanBackup = findCleanBackup(projectDir);
-    if (!cleanBackup)
-      throw new IspError('No backup from before the ISP outbound was added was found in .isp-backup. Nothing was changed.');
-    // Stage the selected backup before rotation can prune it from .isp-backup.
-    const staged = makeTmpPath(projectDir);
-    tempFiles.push(staged);
-    mkdirSync(staged, { mode: 0o700 });
-    restoreBackup(staged, cleanBackup);
-    const changed = (name: string) => isFile(join(staged, name)) &&
-      (!isFile(path(name)) || !readFileSync(join(staged, name)).equals(readFileSync(path(name))));
-    const cfgChanged = changed('config.json');
-    const envChanged = changed('.env');
-    const clashChanged = changed('clash.yaml');
-    if (cfgChanged) {
-      await validateCandidate(image, candidate(readFileSync(join(staged, 'config.json'))));
-      await confirmRestart();
-    }
-    if (cfgChanged || envChanged || clashChanged) {
-      saveBackup();
-      rollbackArmed = true;
-      restoreBackup(projectDir, staged);
-      if (cfgChanged && (!await service.recreate() || !await service.verifyService(false))) {
-        await service.showLogs();
-        await rollback();
-        throw new IspError('sing-box did not come up after removing the ISP outbound. The previous configuration was restored.');
-      }
-      rollbackArmed = false;
-    }
-    info('\nISP outbound removed.');
-    info(`  Restored files from ${cleanBackup}`);
-    if (cfgChanged) info('  config.json: ISP inbounds, outbound and route rule removed; sing-box restarted.');
-    if (envChanged) info('  .env: ISP_SOCKS_* keys removed.');
-    if (clashChanged) info(`  clash.yaml: ISP nodes removed from the nodes list and the ${GROUP_MAIN} group. Re-import it in your clients.`);
-    portNotice(io, 'remove');
+    const config = removeIspFromConfig(original.config);
+    const changed = await apply(image, original, config, envText, envWithoutIsp(envText));
+    info(changed ? `\nISP outbound and its targeted rules removed. Other server settings are preserved; route.final: ${config.route?.final ?? 'direct'}.`
+      : '\nNo ISP outbound was configured. Nothing to remove.');
   };
 
   try {
@@ -296,8 +251,7 @@ Notes:
       }
     });
   } catch (error) {
-    if (controller.signal.aborted)
-      return (controller.signal.reason as Interrupted).code;
+    if (controller.signal.aborted) return (controller.signal.reason as Interrupted).code;
     throw error;
   } finally {
     for (const { signal, handler } of handlers) process.removeListener(signal, handler);
@@ -330,66 +284,6 @@ async function collectInputs(
     ? `Expected egress IP, if it differs from the entry IP [${currentEgress}; '-' resets to ${address.host}]: `
     : `Expected egress IP, if it differs from the entry IP (Enter = the entry IP ${address.host}): `)).trim();
   if (currentEgress) egressIp = egressIp === '-' ? '' : egressIp || currentEgress;
-  if (egressIp && !isIpv4(egressIp) && !isIpv6Strict(egressIp))
-    throw new IspError('Invalid expected egress IP.');
+  if (egressIp && !isIpv4(egressIp) && !isIpv6Strict(egressIp)) throw new IspError('Invalid expected egress IP.');
   return { ...address, user, pass, egressIp };
 }
-
-function portNotice(io: IO, action: 'add' | 'remove'): void {
-  io.stdout('\n' + (action === 'add' ? ADD_PORT_NOTICE : REMOVE_PORT_NOTICE));
-}
-
-const ADD_PORT_NOTICE = `ACTION REQUIRED: allow these ports yourself. This script does not open any port.
-  ${SS_ISP_PORT}/tcp  (${SS_ISP_TAG}, Shadowsocks)
-  ${SS_ISP_PORT}/udp  (${SS_ISP_TAG}, Shadowsocks)
-  ${VLESS_ISP_PORT}/tcp  (${VLESS_ISP_TAG}, VLESS Reality)
-Allow them in BOTH places, otherwise the new ports are not reachable from outside:
-  1. the local firewall on this server, if you run one (ufw, firewalld or iptables);
-  2. your cloud provider's security group (or network ACL) for this server.
-Ports ${SS_PORT} and ${VLESS_PORT} are not affected.
-
-Example commands for reference (run as root, use the one for your firewall):
-  ufw (rules are persistent already):
-    ufw allow ${SS_ISP_PORT}/tcp
-    ufw allow ${SS_ISP_PORT}/udp
-    ufw allow ${VLESS_ISP_PORT}/tcp
-  firewalld (use --permanent, then --reload):
-    firewall-cmd --permanent --add-port=${SS_ISP_PORT}/tcp
-    firewall-cmd --permanent --add-port=${SS_ISP_PORT}/udp
-    firewall-cmd --permanent --add-port=${VLESS_ISP_PORT}/tcp
-    firewall-cmd --reload
-  iptables (lost on reboot unless saved; repeat with ip6tables if you filter IPv6):
-    iptables -I INPUT -p tcp --dport ${SS_ISP_PORT} -j ACCEPT
-    iptables -I INPUT -p udp --dport ${SS_ISP_PORT} -j ACCEPT
-    iptables -I INPUT -p tcp --dport ${VLESS_ISP_PORT} -j ACCEPT
-    then save them: netfilter-persistent save
-    or: iptables-save > /etc/iptables/rules.v4
-    (install iptables-persistent first if it is missing: apt-get install -y iptables-persistent;
-     both ways save the whole current iptables ruleset, not only these rules)
-`;
-
-const REMOVE_PORT_NOTICE = `NOTE: the ISP ports are no longer used, so you can now close them yourself. This script does not close any port.
-  ${SS_ISP_PORT}/tcp
-  ${SS_ISP_PORT}/udp
-  ${VLESS_ISP_PORT}/tcp
-Close them in BOTH places if you opened them:
-  1. the local firewall on this server;
-  2. your cloud provider's security group (or network ACL).
-Closing a rule by port also removes a rule you added yourself for the same port, so check first.
-
-Example commands for reference (run as root, use the one for your firewall):
-  ufw:
-    ufw delete allow ${SS_ISP_PORT}/tcp
-    ufw delete allow ${SS_ISP_PORT}/udp
-    ufw delete allow ${VLESS_ISP_PORT}/tcp
-  firewalld (use --permanent, then --reload):
-    firewall-cmd --permanent --remove-port=${SS_ISP_PORT}/tcp
-    firewall-cmd --permanent --remove-port=${SS_ISP_PORT}/udp
-    firewall-cmd --permanent --remove-port=${VLESS_ISP_PORT}/tcp
-    firewall-cmd --reload
-  iptables (then save the ruleset, as above):
-    iptables -D INPUT -p tcp --dport ${SS_ISP_PORT} -j ACCEPT
-    iptables -D INPUT -p udp --dport ${SS_ISP_PORT} -j ACCEPT
-    iptables -D INPUT -p tcp --dport ${VLESS_ISP_PORT} -j ACCEPT
-    then: netfilter-persistent save   (or: iptables-save > /etc/iptables/rules.v4)
-`;
