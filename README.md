@@ -26,6 +26,13 @@ If Node >= 22 is missing, run `sh install.sh` from the repository. It uses no su
 
 ## Quick start
 
+Without Node >= 22, first install it (no sudo):
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/main/install.sh
+sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
+```
+
 Run the npm package `my-singbox` with npx in a writable deployment directory:
 
 ```bash

@@ -26,6 +26,13 @@
 
 ## 快速开始
 
+没有 Node >= 22 时先安装（不用 sudo）：
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/main/install.sh
+sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
+```
+
 在可写的部署目录中用 npx 运行 npm 包 `my-singbox`：
 
 ```bash
