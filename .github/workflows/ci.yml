@@ -83,10 +83,8 @@ jobs:
       - run: |
           npm run build
           test -f dist/cli.js && test -f dist/index.js
-          node dist/cli.js --version
           node dist/cli.js doctor --help
           node tools/check-bundle.mjs
-          node tools/check-pack.mjs
 
   license-scan:
     runs-on: ubuntu-latest

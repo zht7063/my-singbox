@@ -31,11 +31,7 @@ function scan(directory) {
     let license = normalizeLicense(pkg.license ?? pkg.licenses);
     if (license === 'UNKNOWN') {
       for (const name of readdirSync(path).filter((x) => /^licen[sc]e(?:\.|$)/i.test(x))) {
-        try {
-          license = inferLicense(readFileSync(join(path, name), 'utf8'));
-        } catch {
-          continue;
-        }
+        license = inferLicense(readFileSync(join(path, name), 'utf8'));
         if (license !== 'UNKNOWN') {
           break;
         }
@@ -62,11 +58,7 @@ const failures = rows.filter((x) => !['PASS', 'EXCEPTION'].includes(x.verdict)).
 const header =
   'MIT repository: shipped artifact bundles 0 third-party packages; ' +
   'package.json has 0 dependencies.';
-if (process.argv.includes('--json')) {
-  console.log(JSON.stringify({ header, packages: rows, failures }, null, 2));
-} else {
-  console.log(header);
-  console.table(rows);
-  console.log(`${rows.length} packages scanned; ${failures} failures.`);
-}
+console.log(header);
+console.table(rows);
+console.log(`${rows.length} packages scanned; ${failures} failures.`);
 process.exitCode = failures ? 1 : 0;

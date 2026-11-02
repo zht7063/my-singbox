@@ -1,4 +1,4 @@
-export const ALLOWED = new Set([
+const ALLOWED = new Set([
   'MIT',
   'MIT-0',
   'ISC',

@@ -15,8 +15,6 @@ export interface IO {
   readLine?(prompt: string): Promise<string | null>;
   deps?: Partial<CliDeps>;
 }
-declare const __VERSION__: string;
-const version = typeof __VERSION__ === 'undefined' ? '2.0.0-next.0' : __VERSION__;
 const commands = [
   'init',
   'gen-keys',
@@ -29,7 +27,7 @@ const commands = [
 const usage = `Usage: my-singbox <cmd>
 
 Commands: ${commands.join(', ')}
-Options: --help, -h; --version, -v
+Options: --help, -h
 `;
 const ispUsage = `Usage: my-singbox isp-outbound [--add | --remove] [--yes]
 
@@ -54,10 +52,6 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
   const [cmd, ...args] = argv;
   if (!cmd || ['--help', '-h'].includes(cmd)) {
     io.stdout(usage);
-    return 0;
-  }
-  if (['--version', '-v'].includes(cmd)) {
-    io.stdout(`${version}\n`);
     return 0;
   }
   if (!commands.includes(cmd)) {

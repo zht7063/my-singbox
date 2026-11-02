@@ -7,7 +7,7 @@ export interface Check {
   message: string;
 }
 
-export const legacyHint =
+const legacyHint =
   'Use shell version v1.1.0: https://github.com/zht7063/my-singbox/releases/tag/v1.1.0';
 const result = (name: string, ok: boolean, message: string): Check => ({
   name,
