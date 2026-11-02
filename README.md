@@ -2,7 +2,7 @@
 
 # My sing-box
 
-Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker on a Debian/Ubuntu VPS, and export a `clash.yaml` for Mihomo.
+Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker on a Linux VPS, and export a `clash.yaml` for Mihomo.
 
 ## What gets deployed
 
@@ -11,58 +11,60 @@ Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker
 - Container image `ghcr.io/sagernet/sing-box:v1.14.4` (pinned), with `network_mode: host`.
 - The client config is `clash.yaml`. The nodes are `shadowsocks` and `vless-reality`, both in the `select` group `Proxy` (default: `shadowsocks`).
 
-> **Upgrading from an older version:** the nodes were previously named `My-sing-box` and `My-VLESS-Reality`, and the group `PROXY`. They were renamed. Server ports and credentials are unchanged, but an existing `clash.yaml` keeps the old names. To get the new names, delete `clash.yaml`, run `bash scripts/conf-clash.sh` again, and **re-import `clash.yaml` in every client** (a client's saved node and group selection is lost when names change).
+> **Upgrading from an older version:** the nodes were previously named `My-sing-box` and `My-VLESS-Reality`, and the group `PROXY`. They were renamed. Server ports and credentials are unchanged, but an existing `clash.yaml` keeps the old names. To get the new names, delete `clash.yaml`, run `npx my-singbox conf-clash` again, and **re-import `clash.yaml` in every client** (a client's saved node and group selection is lost when names change).
 
 Ports `8388` and `8443` must be free. The ports are defined in `templates/config.json.template` and `templates/clash.yaml.template`. `compose.yaml` does not map ports.
 
 ## Requirements
 
-- Debian/Ubuntu. The deployment directory must be writable; all files live in `/opt/sing-box/`.
-- Docker, the Docker Compose plugin (`docker compose version`), and a running Docker daemon.
-- On Debian/Ubuntu, run `sudo bash scripts/init.sh` first. It installs only the missing non-Docker dependencies (`ca-certificates`, `curl`, `openssl`, `iproute2` which provides `ss`, `git`, `jq` (used by `isp-outbound.sh`); it also installs `awk`, `grep`, or `coreutils` if they are missing). It does not install Docker, and it does not change SSH, the firewall, users, or passwords.
-- openssl and curl (`gen-keys.sh` accepts wget when curl is missing). An interactive terminal is needed only when public IP detection fails.
-- `ss` (`iproute2`). Without it, `start.sh` only warns and skips the UDP check.
-- Open `8388/tcp`, `8388/udp`, and `8443/tcp` in the firewall and the security group.
-- The client must use the Mihomo core, for example Clash Verge, FlClash, or Clash Meta.
+- Linux x64 or arm64 with glibc >= 2.28, and a deployment directory writable by the current user. Debian/Ubuntu is not required. CentOS 7, Alpine/musl and other architectures are refused with a link to [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0).
+- Node >= 22, Docker with the Compose plugin, a running daemon and access to its socket. See the Docker appendix for Debian/Ubuntu installation. Docker group membership grants root-equivalent access.
+- `ss` for the UDP check; without it `start` warns and skips that check. Open `8388/tcp`, `8388/udp`, and `8443/tcp` in the firewall and security group.
+- A Mihomo-based client, such as Clash Verge, FlClash or Clash Meta.
+
+If Node >= 22 is missing, run `bash install.sh` from the repository. It uses no sudo and installs Node to `~/.local/node`; add `~/.local/node/bin` to `PATH`. It verifies the tarball against built-in pins for the default version or the official `SHASUMS256.txt` for other versions and aborts on mismatch. The bootstrap requires curl and a SHA-256 utility. Optional overrides are `MY_SINGBOX_NODE_DIR`, `MY_SINGBOX_NODE_VERSION`, `MY_SINGBOX_NODE_MIRROR` and `MY_SINGBOX_FORCE_NODE_INSTALL=1`.
 
 ## Quick start
 
+Run the npm package `my-singbox` with npx in a writable deployment directory:
+
 ```bash
-git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
+mkdir -p /opt/sing-box  # create it with appropriate permissions if necessary
 cd /opt/sing-box
-sudo bash scripts/init.sh
-SING_BOX_VERSION=latest bash scripts/gen-keys.sh
-bash scripts/gen-config.sh
-bash scripts/conf-clash.sh
-bash scripts/start.sh
+npx my-singbox init
 ```
 
-If `git` is not installed yet, run `sudo apt-get update && sudo apt-get install -y git` first, then clone. `init.sh` also installs `git` later on.
+`init` runs doctor checks for Node, platform, architecture, Docker Compose and socket access; copies the packaged `compose.yaml` if absent; runs `gen-keys`, `gen-config`, `conf-clash` and `start`; and prints the ports to open. It defaults `SING_BOX_VERSION` to the compose image tag `v1.14.4` when unset. Existing `.env`, `config.json` and `clash.yaml` are kept, so it can be re-run safely. Unlike v1.1.0's `init.sh`, it does not install apt packages or require root, and never uses sudo. It only prints instructions for root-required operations such as installing Docker or adding a user to the Docker group. Node replaces curl, openssl, jq and git for the TS flow; keys still come from the sing-box Docker image. Public IP detection may prompt if it fails.
 
-`SING_BOX_VERSION` only decides which image `gen-keys.sh` uses to generate the keys. The running container always uses `ghcr.io/sagernet/sing-box:v1.14.4` from `compose.yaml`.
+For a step-by-step alternative, copy `compose.yaml` from the repository into the deployment directory (or run `init` once) and run:
 
-| Script | Behavior | Output |
-| --- | --- | --- |
-| `scripts/init.sh` | Debian/Ubuntu only, and must run as root (otherwise it tells you to rerun with `sudo`). After `apt-get update`, it installs only the missing non-Docker dependencies and prints whether each tool is present. If Docker or Compose is unavailable, it points you to the appendix. | No project files |
-| `scripts/gen-keys.sh` | Checks `docker`, `openssl`, and `docker info`. Uses curl (or wget if curl is missing) to query a public IP echo service, trying IPv4 first and falling back to IPv6 if there is no public IPv4. On success it prints the detected address. Only on failure does it ask `Public IP address of this machine:`. Private, loopback, and reserved addresses are rejected. It then uses the sing-box image to generate the UUID, the REALITY keys, and the Shadowsocks 2022 password. | `.env` |
-| `scripts/gen-config.sh` | Renders the server template from `.env`. The config contains neither `REALITY_PUBLIC_KEY` nor `SERVER_ADDRESS`. | `config.json` |
-| `scripts/conf-clash.sh` | Renders the client template from `.env`. The routing rules are kept as they are. It refuses to write the REALITY private key. | `clash.yaml` |
-| `scripts/start.sh` | Runs `docker compose up -d` and confirms the container `sing-box` stays running. | A running sing-box |
-| `scripts/isp-outbound.sh` | Optional, not part of the quick start. `--add` adds two extra ports (`13839` tcp+udp, `18444` tcp) whose traffic leaves through your static ISP SOCKS5 proxy, and adds the nodes `shadowsocks-isp` and `vless-reality-isp` to the `Proxy` group; `--remove` undoes it. Needs `jq` and Docker access, no `sudo` of its own, and does not touch the firewall: you open the ports yourself. See [Optional: ISP outbound](#optional-isp-outbound-static-socks5-egress). | Edits `config.json`, `.env` and `clash.yaml`; backups in `.isp-backup/` |
+```bash
+SING_BOX_VERSION=v1.14.4 npx my-singbox gen-keys
+npx my-singbox gen-config
+npx my-singbox conf-clash
+npx my-singbox start
+```
 
-If the three output files already exist, the corresponding scripts refuse to overwrite them. To regenerate one, delete that file first.
+`SING_BOX_VERSION` selects the image used to generate keys; the running container uses the image in `compose.yaml`, pinned to `v1.14.4` by default. `npx my-singbox doctor` runs the prerequisite checks separately.
+
+| v1.1.0 shell command | TS command (same arguments) |
+| --- | --- |
+| `scripts/init.sh` | `npx my-singbox init` |
+| `scripts/gen-keys.sh` | `npx my-singbox gen-keys` |
+| `scripts/gen-config.sh` | `npx my-singbox gen-config` |
+| `scripts/conf-clash.sh` | `npx my-singbox conf-clash` |
+| `scripts/start.sh` | `npx my-singbox start` |
+| `scripts/isp-outbound.sh` | `npx my-singbox isp-outbound` |
+
+### Legacy shell version (v1.1.0)
+
+The shell scripts remain in [`scripts/`](scripts/) as a v1.1.0 reference. For the legacy flow and its prerequisites, see the [v1.1.0 release](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0).
 
 ## Verify, roll back, uninstall
 
-`scripts/start.sh` runs `sing-box check` inside the container, checks TCP on `127.0.0.1` for every `listen_port`, and checks UDP on `8388` with `ss -uln`. Without `ss` it only warns and does not fail. On success it prints `Self-check passed. Ports: ...`. This covers the local machine only. For clients to connect, the three ports above must still be open on the public side.
+`npx my-singbox start` runs `sing-box check` inside the container, checks TCP on `127.0.0.1` for every `listen_port`, and checks UDP on `8388` with `ss -uln`. Without `ss` it only warns and does not fail. On success it prints `Self-check passed. Ports: ...`. This covers the local machine only. For clients to connect, the three ports above must still be open on the public side.
 
-If `latest` fails to start or `sing-box check` fails, change the image in `compose.yaml` to:
-
-```yaml
-image: ghcr.io/sagernet/sing-box:1.14.4
-```
-
-Then run `docker compose up -d` in `/opt/sing-box`. If the keys also need to be generated by `1.14.4`, first delete `.env`, `config.json`, and `clash.yaml`, then rerun the four scripts in order with `SING_BOX_VERSION=1.14.4`, and make `compose.yaml` use the same tag.
+If the pinned image fails to start or `sing-box check` fails, change the tag in `compose.yaml` (default `ghcr.io/sagernet/sing-box:v1.14.4`) to another [released tag](https://github.com/SagerNet/sing-box/releases), then run `docker compose up -d` in the deployment directory. If the keys should also be generated by that version, first delete `.env`, `config.json`, and `clash.yaml`, then run `npx my-singbox init` again: it takes the tag from `compose.yaml`.
 
 Uninstalling only stops the container of this directory. It does not delete the repository:
 
@@ -72,6 +74,8 @@ docker compose down
 ```
 
 ## Optional: ISP outbound (static SOCKS5 egress)
+
+In the TS version, use `npx my-singbox isp-outbound --add|--remove` with the same arguments; this is delivered in phase P3. Until then, use the v1.1.0 shell script.
 
 `scripts/isp-outbound.sh` is optional. Skip it and nothing changes: the two nodes keep using `8388` and `8443`, and no other script depends on it. Use it when you have a static ISP SOCKS5 proxy and want two extra ports whose traffic leaves through that proxy instead of the server's own IP.
 
@@ -166,9 +170,6 @@ Notes:
 ```text
 /opt/sing-box/
 ├── compose.yaml
-├── scripts/
-├── templates/
-├── skills/deploy-sing-box-node/SKILL.md
 ├── .env          # generated
 ├── config.json   # generated
 └── clash.yaml    # generated
@@ -182,11 +183,11 @@ When deploying, agents should follow [`skills/deploy-sing-box-node/SKILL.md`](sk
 
 ## Credentials
 
-`.env`, `config.json`, and `clash.yaml` contain node credentials and are listed in `.gitignore`. The three scripts set the corresponding file to mode `600`. The REALITY private key appears only in `.env` and `config.json`, and is never written to `clash.yaml`. Do not commit these files.
+`.env`, `config.json`, and `clash.yaml` contain node credentials and are listed in `.gitignore`. The `gen-keys`, `gen-config`, and `conf-clash` commands set their corresponding files to mode `600`. The npm package ships none of these generated files or tests. The REALITY private key appears only in `.env` and `config.json`, and is never written to `clash.yaml`. Do not commit these files.
 
 ## Appendix: Quick Docker installation
 
-`init.sh` does not install Docker. The three steps below follow the apt repository installation in the official [Debian](https://docs.docker.com/engine/install/debian/) and [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) documentation, and use the `ID` in `/etc/os-release` to tell the distributions apart.
+`init` does not install Docker. The three steps below follow the apt repository installation in the official [Debian](https://docs.docker.com/engine/install/debian/) and [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) documentation, and use the `ID` in `/etc/os-release` to tell the distributions apart.
 
 Remove old packages that conflict with the official ones. The package names are the union of the two documents, so Debian and Ubuntu use the same command. If none of these packages are installed, `apt-get remove` removes nothing.
 

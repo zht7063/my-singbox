@@ -42,7 +42,7 @@ export async function invoke(cmd: string, cwd: string, patch: Partial<IO> = {}, 
     env: { SING_BOX_VERSION: creds.singBoxVersion },
     deps: keyDeps(),
     system: {
-      nodeVersion: '22.0.0', platform: 'linux', arch: 'x64',
+      nodeVersion: '22.0.0', platform: 'linux', arch: 'x64', glibcVersionRuntime: '2.36',
       exec: async () => '', socketAccessible: () => true, username: () => 'fixture',
     },
     stdout: (s) => { stdout += s; },

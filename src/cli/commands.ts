@@ -3,6 +3,9 @@ import type { System } from '../doctor/system.js';
 import { genKeys } from './gen-keys.js';
 import { genConfig } from './gen-config.js';
 import { confClash } from './conf-clash.js';
+import { init } from './init.js';
+import { start } from './start.js';
+import type { StartDeps } from '../core/start.js';
 import type { CliDeps } from './deps.js';
 export type { CliDeps } from './deps.js';
 
@@ -14,6 +17,7 @@ export interface IO {
   env?: Record<string, string | undefined>;
   readLine?(prompt: string): Promise<string | null>;
   deps?: Partial<CliDeps>;
+  start?: Partial<StartDeps>;
 }
 const commands = [
   'init',
@@ -87,6 +91,8 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
   if (cmd === 'gen-keys') return genKeys(io);
   if (cmd === 'gen-config') return genConfig(io);
   if (cmd === 'conf-clash') return confClash(io);
+  if (cmd === 'init') return init(io);
+  if (cmd === 'start') return start(io);
   io.stderr(
     `${cmd}: not implemented yet (planned for phase P2/P4; ` +
       `use the shell script scripts/${cmd}.sh from v1.1.0 meanwhile)\n`,

@@ -7,3 +7,4 @@ export * from './model.js';
 export * from './core/templates.js';
 export * from './core/render-config.js';
 export * from './core/render-clash.js';
+export * from './core/start.js';
