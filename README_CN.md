@@ -2,7 +2,7 @@
 
 # My sing-box
 
-在 Debian/Ubuntu VPS 上用 Docker 构建基于 sing-box 的 shadowsocks 2022 和 vless-reality-vision 节点，并导出给 Mihomo 使用的 `clash.yaml`。
+在 Linux VPS 上用 Docker 构建基于 sing-box 的 shadowsocks 2022 和 vless-reality-vision 节点，并导出给 Mihomo 使用的 `clash.yaml`。
 
 ## 部署内容
 
@@ -11,58 +11,60 @@
 - 容器镜像 `ghcr.io/sagernet/sing-box:v1.14.4`（已固定版本），`network_mode: host`。
 - 客户端配置是 `clash.yaml`。节点为 `shadowsocks` 和 `vless-reality`，位于 `select` 组 `Proxy` 下（默认 `shadowsocks`）。
 
-> **从旧版本升级：** 节点原名 `My-sing-box`、`My-VLESS-Reality`，组原名 `PROXY`，现已改名。服务端端口和凭据不变，但已有的 `clash.yaml` 仍是旧名字。要使用新名字，请删除 `clash.yaml`，重新运行 `bash scripts/conf-clash.sh`，并在**每个客户端里重新导入 `clash.yaml`**（名字变了，客户端里保存的节点和分组选择会丢失）。
+> **从旧版本升级：** 节点原名 `My-sing-box`、`My-VLESS-Reality`，组原名 `PROXY`，现已改名。服务端端口和凭据不变，但已有的 `clash.yaml` 仍是旧名字。要使用新名字，请删除 `clash.yaml`，重新运行 `npx my-singbox conf-clash`，并在**每个客户端里重新导入 `clash.yaml`**（名字变了，客户端里保存的节点和分组选择会丢失）。
 
 `8388` 和 `8443` 需要空闲。端口写在 `templates/config.json.template` 和 `templates/clash.yaml.template`。`compose.yaml` 不映射端口。
 
 ## 要求
 
-- Debian/Ubuntu。部署目录可写，文件都放在 `/opt/sing-box/`。
-- Docker、Docker Compose 插件（`docker compose version`），以及正在运行的 Docker daemon。
-- Debian/Ubuntu 先运行 `sudo bash scripts/init.sh`。它只安装缺失的非 Docker 依赖（`ca-certificates`、`curl`、`openssl`、提供 `ss` 的 `iproute2`、`git`、`jq`（`isp-outbound.sh` 要用）；没有 `awk`、`grep` 或 `coreutils` 时也装上），不安装 Docker，也不改 SSH、防火墙、用户或密码。
-- openssl、curl（没有 curl 时 `gen-keys.sh` 接受 wget）。检测公网 IP 失败时才需要交互式终端。
-- `ss`（`iproute2`）。没有它时 `start.sh` 只警告，并跳过 UDP 检查。
-- 防火墙和安全组放行 `8388/tcp`、`8388/udp`、`8443/tcp`。
-- 客户端使用 Mihomo 内核，例如 Clash Verge、FlClash 或 Clash Meta。
+- Linux x64 或 arm64，glibc >= 2.28，部署目录须对当前用户可写；不要求 Debian/Ubuntu。CentOS 7、Alpine/musl 和其他架构会被拒绝，并提示使用 [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0)。
+- Node >= 22、Docker 和 Compose 插件、运行中的 daemon 及其 socket 访问权限。Debian/Ubuntu 安装方法见 Docker 附录。Docker 组成员拥有等同 root 的权限。
+- UDP 检查需要 `ss`；没有时 `start` 会警告并跳过该检查。防火墙和安全组须放行 `8388/tcp`、`8388/udp`、`8443/tcp`。
+- 使用 Mihomo 内核的客户端，例如 Clash Verge、FlClash 或 Clash Meta。
+
+没有 Node >= 22 时，在仓库中运行 `bash install.sh`。它不使用 sudo，安装到 `~/.local/node`；请把 `~/.local/node/bin` 加入 `PATH`。默认版本使用内置校验值，其他版本使用官方 `SHASUMS256.txt` 校验压缩包，不匹配时终止。安装器需要 curl 和 SHA-256 工具。可选覆盖项为 `MY_SINGBOX_NODE_DIR`、`MY_SINGBOX_NODE_VERSION`、`MY_SINGBOX_NODE_MIRROR` 和 `MY_SINGBOX_FORCE_NODE_INSTALL=1`。
 
 ## 快速开始
 
+在可写的部署目录中用 npx 运行 npm 包 `my-singbox`：
+
 ```bash
-git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
+mkdir -p /opt/sing-box  # 必要时先以适当权限创建目录
 cd /opt/sing-box
-sudo bash scripts/init.sh
-SING_BOX_VERSION=latest bash scripts/gen-keys.sh
-bash scripts/gen-config.sh
-bash scripts/conf-clash.sh
-bash scripts/start.sh
+npx my-singbox init
 ```
 
-还没有 `git` 时，先 `sudo apt-get update && sudo apt-get install -y git`，再克隆。`init.sh` 之后也会装上 `git`。
+`init` 先用 doctor 检查 Node、平台、架构、Docker Compose 和 socket 访问权限；缺少 `compose.yaml` 时复制包内版本；依次运行 `gen-keys`、`gen-config`、`conf-clash` 和 `start`，最后打印需要放行的端口。未设置 `SING_BOX_VERSION` 时默认使用 compose 中的镜像标签 `v1.14.4`。已有的 `.env`、`config.json`、`clash.yaml` 会保留，因此可以安全重跑。与 v1.1.0 的 `init.sh` 不同，它不安装 apt 包、不需要 root，也从不使用 sudo；安装 Docker、将用户加入 Docker 组等需要 root 的操作只打印指引。TS 流程由 Node 代替 curl、openssl、jq 和 git，密钥仍由 sing-box Docker 镜像生成。公网 IP 检测失败时可能需要输入。
 
-`SING_BOX_VERSION` 只决定 `gen-keys.sh` 用哪个镜像生成密钥。运行中的容器始终使用 `compose.yaml` 里的 `ghcr.io/sagernet/sing-box:v1.14.4`。
+也可以把仓库里的 `compose.yaml` 复制到部署目录（或先运行一次 `init`），再分步运行：
 
-| 脚本 | 行为 | 产出 |
-| --- | --- | --- |
-| `scripts/init.sh` | 仅 Debian/Ubuntu，且必须 root（否则提示用 `sudo` 重跑）。`apt-get update` 后只安装缺失的非 Docker 依赖，并打印各工具是否存在。Docker 或 Compose 不可用时，提示看附录。 | 无项目文件 |
-| `scripts/gen-keys.sh` | 检查 `docker`、`openssl` 和 `docker info`。用 curl（没有则用 wget）访问公网 IP 回显服务，先试 IPv4，没有公网 IPv4 再试 IPv6。成功时打印检测到的地址。失败时才询问 `Public IP address of this machine:`。私网、回环和保留地址会被拒绝。然后用 sing-box 镜像生成 UUID、REALITY 密钥和 Shadowsocks 2022 密码。 | `.env` |
-| `scripts/gen-config.sh` | 用 `.env` 渲染服务端模板。配置里没有 `REALITY_PUBLIC_KEY` 和 `SERVER_ADDRESS`。 | `config.json` |
-| `scripts/conf-clash.sh` | 用 `.env` 渲染客户端模板。分流规则原样保留。拒绝写入 REALITY 私钥。 | `clash.yaml` |
-| `scripts/start.sh` | `docker compose up -d`，确认容器 `sing-box` 保持运行。 | 运行中的 sing-box |
-| `scripts/isp-outbound.sh` | 可选，不属于快速开始。`--add` 额外开两个端口（`13839` tcp+udp、`18444` tcp），流量经你的静态 ISP SOCKS5 代理出去，并把节点 `shadowsocks-isp`、`vless-reality-isp` 加入 `Proxy` 组；`--remove` 撤销。需要 `jq` 和 Docker 访问权限，本身不需要 `sudo`，也不碰防火墙：端口需要你自己放行。详见 [可选：ISP 出口](#可选isp-出口静态-socks5)。 | 修改 `config.json`、`.env`、`clash.yaml`；备份在 `.isp-backup/` |
+```bash
+SING_BOX_VERSION=v1.14.4 npx my-singbox gen-keys
+npx my-singbox gen-config
+npx my-singbox conf-clash
+npx my-singbox start
+```
 
-三个产出文件已存在时，对应脚本拒绝覆盖。要重新生成，先删除那个文件。
+`SING_BOX_VERSION` 选择生成密钥的镜像；运行中的容器使用 `compose.yaml` 中的镜像，默认固定为 `v1.14.4`。`npx my-singbox doctor` 可单独检查前提条件。
+
+| v1.1.0 shell 命令 | TS 命令（参数相同） |
+| --- | --- |
+| `scripts/init.sh` | `npx my-singbox init` |
+| `scripts/gen-keys.sh` | `npx my-singbox gen-keys` |
+| `scripts/gen-config.sh` | `npx my-singbox gen-config` |
+| `scripts/conf-clash.sh` | `npx my-singbox conf-clash` |
+| `scripts/start.sh` | `npx my-singbox start` |
+| `scripts/isp-outbound.sh` | `npx my-singbox isp-outbound` |
+
+### 旧版 shell（v1.1.0）
+
+Shell 脚本仍保留在 [`scripts/`](scripts/) 供参考。旧版流程和前提条件见 [v1.1.0 发行版](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0)。
 
 ## 验证、回滚、卸载
 
-`scripts/start.sh` 在容器内执行 `sing-box check`，检查本机 `127.0.0.1` 上每个 `listen_port` 的 TCP，并用 `ss -uln` 检查 `8388` 的 UDP。没有 `ss` 时只警告，不失败。通过时打印 `Self-check passed. Ports: ...`。这只覆盖本机。客户端要连上，公网侧仍需放行上面的三个端口。
+`npx my-singbox start` 在容器内执行 `sing-box check`，检查本机 `127.0.0.1` 上每个 `listen_port` 的 TCP，并用 `ss -uln` 检查 `8388` 的 UDP。没有 `ss` 时只警告，不失败。通过时打印 `Self-check passed. Ports: ...`。这只覆盖本机。客户端要连上，公网侧仍需放行上面的三个端口。
 
-`latest` 无法启动或 `sing-box check` 失败时，把 `compose.yaml` 的镜像改为：
-
-```yaml
-image: ghcr.io/sagernet/sing-box:1.14.4
-```
-
-然后在 `/opt/sing-box` 执行 `docker compose up -d`。密钥也要改由 `1.14.4` 生成时，先删除 `.env`、`config.json`、`clash.yaml`，再用 `SING_BOX_VERSION=1.14.4` 按顺序重跑四个脚本，并让 `compose.yaml` 使用同一标签。
+固定的镜像无法启动或 `sing-box check` 失败时，把 `compose.yaml` 里的标签（默认 `ghcr.io/sagernet/sing-box:v1.14.4`）改成另一个[已发布标签](https://github.com/SagerNet/sing-box/releases)，然后在部署目录执行 `docker compose up -d`。密钥也要改由该版本生成时，先删除 `.env`、`config.json`、`clash.yaml`，再重新运行 `npx my-singbox init`：它会从 `compose.yaml` 取标签。
 
 卸载只停掉本目录的容器，不删除仓库：
 
@@ -72,6 +74,8 @@ docker compose down
 ```
 
 ## 可选：ISP 出口（静态 SOCKS5）
+
+TS 版本使用 `npx my-singbox isp-outbound --add|--remove`，参数相同，由 P3 阶段交付；在此之前请使用 v1.1.0 shell 脚本。
 
 `scripts/isp-outbound.sh` 是可选脚本。不运行就什么都不变：两个节点仍用 `8388` 和 `8443`，其他脚本也不依赖它。已有静态 ISP SOCKS5 代理、想多开两个出口走该代理（而不是服务器自身 IP）的端口时才用。
 
@@ -166,9 +170,6 @@ iptables：   iptables -I INPUT -p tcp --dport 13839 -j ACCEPT（以及 udp 1383
 ```text
 /opt/sing-box/
 ├── compose.yaml
-├── scripts/
-├── templates/
-├── skills/deploy-sing-box-node/SKILL.md
 ├── .env          # 生成
 ├── config.json   # 生成
 └── clash.yaml    # 生成
@@ -182,11 +183,11 @@ iptables：   iptables -I INPUT -p tcp --dport 13839 -j ACCEPT（以及 udp 1383
 
 ## 凭据
 
-`.env`、`config.json`、`clash.yaml` 含节点凭据，已写入 `.gitignore`。三个脚本把对应文件设为 `600`。REALITY 私钥只在 `.env` 和 `config.json` 中，不会写入 `clash.yaml`。不要提交这些文件。
+`.env`、`config.json`、`clash.yaml` 含节点凭据，已写入 `.gitignore`。`gen-keys`、`gen-config`、`conf-clash` 命令把对应文件设为 `600`。npm 包不包含这些生成文件或测试。REALITY 私钥只在 `.env` 和 `config.json` 中，不会写入 `clash.yaml`。不要提交这些文件。
 
 ## 附录：快速安装 Docker
 
-`init.sh` 不安装 Docker。下面三步对应 [Debian](https://docs.docker.com/engine/install/debian/) 与 [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) 官方文档的 apt 仓库安装，并用 `/etc/os-release` 的 `ID` 区分发行版。
+`init` 不安装 Docker。下面三步对应 [Debian](https://docs.docker.com/engine/install/debian/) 与 [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) 官方文档的 apt 仓库安装，并用 `/etc/os-release` 的 `ID` 区分发行版。
 
 卸掉会和官方包冲突的旧包。包名是两份文档的并集，因此 Debian 和 Ubuntu 用同一条命令。这些包都没装时，`apt-get remove` 不会删任何东西。
 
