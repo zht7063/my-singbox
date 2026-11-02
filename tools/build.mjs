@@ -11,6 +11,8 @@ await build({
   bundle: true,
   minify: false,
   sourcemap: false,
+  // yaml's Node entry uses require() inside the ESM bundle.
+  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
 });
 await writeFile('dist/cli.js', '#!/usr/bin/env node\n' + (await readFile('dist/cli.js', 'utf8')));
 await chmod('dist/cli.js', 0o755);

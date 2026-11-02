@@ -100,19 +100,62 @@ jobs:
 
   runtime-validation:
     runs-on: ubuntu-latest
+    name: runtime-validation (isp ${{ matrix.isp }})
+    strategy:
+      matrix:
+        isp: ['off', 'on']
     steps:
       - uses: actions/checkout@v4
-      # P2: plug in generated config.json / clash.yaml with ISP off and on here.
-      - name: Validate sing-box fixture
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Generate and validate configurations
+        env:
+          ISP: ${{ matrix.isp }}
         run: |
-          docker run --rm ghcr.io/sagernet/sing-box:${SING_BOX_VERSION} version
-          docker run --rm -v "$PWD/tests/fixtures/validation:/validation:ro" ghcr.io/sagernet/sing-box:${SING_BOX_VERSION} check -c /validation/minimal-singbox.json
-      - name: Validate mihomo fixture
-        run: |
+          set +x
+          cli="$GITHUB_WORKSPACE/dist/cli.js"
+          dir="$RUNNER_TEMP/proj-$ISP"
+          mkdir "$dir"
+          cd "$dir"
+          printf '8.8.8.8\n' | SING_BOX_VERSION="$SING_BOX_VERSION" node "$cli" gen-keys
+          if [ "$ISP" = on ]; then
+            printf '%s\n' 'ISP_SOCKS_ADDR=198.51.100.7:1080' 'ISP_SOCKS_USER="fixture-user"' 'ISP_SOCKS_PASS="fixture-pass"' 'ISP_SOCKS_EGRESS_IP=198.51.100.7' >> .env
+          fi
+          node "$cli" gen-config
+          node "$cli" conf-clash
+          cd "$GITHUB_WORKSPACE"
+          jq -e --arg isp "$ISP" '
+            ([.inbounds[].tag] as $tags |
+             [.outbounds[].tag] as $out |
+             [(.route.rules // [])[] | select(.outbound == "isp-socks")] as $rules |
+             if $isp == "on" then
+               ($tags | index("ss-isp-in") != null and index("vless-reality-isp-in") != null) and
+               ($out | index("isp-socks") != null) and
+               ($rules | length == 1 and (.[0].inbound | sort) == ["ss-isp-in", "vless-reality-isp-in"])
+             else
+               ($tags | index("ss-isp-in") == null and index("vless-reality-isp-in") == null) and
+               ($out | index("isp-socks") == null) and ($rules | length == 0)
+             end)' "$dir/config.json" > /dev/null
+          jq -r '.inbounds[].tag' "$dir/config.json"
+          node --input-type=module -e 'import { parse } from "yaml"; import { readFileSync } from "node:fs"; process.stdout.write(JSON.stringify(parse(readFileSync(process.argv[1], "utf8"))))' "$dir/clash.yaml" | jq -e --arg isp "$ISP" '
+            [.proxies[].name] as $names |
+            ([."proxy-groups"[] | select(.name == "Proxy") | .proxies] | first) as $group |
+            if $isp == "on" then
+              ($names | index("shadowsocks-isp") != null and index("vless-reality-isp") != null) and
+              ($group | index("shadowsocks-isp") != null and index("vless-reality-isp") != null)
+            else
+              ($names | index("shadowsocks-isp") == null and index("vless-reality-isp") == null) and
+              ($group | index("shadowsocks-isp") == null and index("vless-reality-isp") == null)
+            end' > /dev/null
+          docker run --rm -v "$dir/config.json:/etc/sing-box/config.json:ro" ghcr.io/sagernet/sing-box:${SING_BOX_VERSION} check -c /etc/sing-box/config.json
           work=$(mktemp -d)
           curl -fsSL --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" -o "$work/mihomo.gz"
           echo "132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323  $work/mihomo.gz" | sha256sum -c -
           gunzip "$work/mihomo.gz"
           chmod +x "$work/mihomo"
           "$work/mihomo" -v
-          "$work/mihomo" -t -f tests/fixtures/validation/minimal-clash.yaml -d "$work/data"
+          "$work/mihomo" -t -f "$dir/clash.yaml" -d "$work/data"
