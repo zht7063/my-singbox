@@ -2,9 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { beforeAll, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { renderGeneratedEnv } from '../../src/core/env.js';
+import { addIspToClash, addIspToConfig } from '../../src/core/isp.js';
 
 const singbox = process.env.SINGBOX_BIN;
 const mihomo = process.env.MIHOMO_BIN;
@@ -15,7 +17,7 @@ beforeAll(() => {
   if (enabled) execFileSync('npm', ['run', 'build'], { stdio: 'pipe' });
 }, 30000);
 
-it.skipIf(!enabled).each(['off', 'on'])('validates generated configs with ISP %s', (isp) => {
+it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated configs with ISP %s', (isp) => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-validation-'));
   try {
     const keys = execFileSync(singbox!, ['generate', 'reality-keypair'], { encoding: 'utf8' });
@@ -34,6 +36,21 @@ it.skipIf(!enabled).each(['off', 'on'])('validates generated configs with ISP %s
     writeFileSync(join(dir, '.env'), env, { mode: 0o600 });
     for (const command of ['gen-config', 'conf-clash'])
       execFileSync(process.execPath, [cli, command], { cwd: dir, stdio: 'pipe' });
+    const applyIncremental = () => {
+      const configPath = join(dir, 'config.json');
+      const clashPath = join(dir, 'clash.yaml');
+      const original = JSON.parse(readFileSync(configPath, 'utf8'));
+      const updated = addIspToConfig(original, {
+        host: '198.51.100.7', port: 1080, addr: '198.51.100.7:1080',
+        user: 'fixture-user', pass: 'fixture-pass', egressIp: '198.51.100.7',
+      });
+      if (!isDeepStrictEqual(original, updated)) writeFileSync(configPath, JSON.stringify(updated, null, 2) + '\n');
+      const clash = readFileSync(clashPath, 'utf8');
+      const updatedClash = addIspToClash(clash);
+      if (clash !== updatedClash) writeFileSync(clashPath, updatedClash);
+    };
+    if (isp === 'incremental') applyIncremental();
+    const hasIsp = isp !== 'off';
     const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
     const clash = parse(readFileSync(join(dir, 'clash.yaml'), 'utf8'));
     const tags = config.inbounds.map((item: { tag: string }) => item.tag);
@@ -41,16 +58,23 @@ it.skipIf(!enabled).each(['off', 'on'])('validates generated configs with ISP %s
     const rules = (config.route?.rules ?? []).filter((rule: { outbound: string }) => rule.outbound === 'isp-socks');
     const names = clash.proxies.map((proxy: { name: string }) => proxy.name);
     const group = clash['proxy-groups'].find((item: { name: string }) => item.name === 'Proxy').proxies;
-    for (const tag of ['ss-isp-in', 'vless-reality-isp-in']) expect(tags.includes(tag)).toBe(isp === 'on');
-    expect(outbounds.includes('isp-socks')).toBe(isp === 'on');
-    expect(rules).toHaveLength(isp === 'on' ? 1 : 0);
-    if (isp === 'on') expect(rules[0].inbound).toEqual(['ss-isp-in', 'vless-reality-isp-in']);
+    for (const tag of ['ss-isp-in', 'vless-reality-isp-in']) expect(tags.includes(tag)).toBe(hasIsp);
+    expect(outbounds.includes('isp-socks')).toBe(hasIsp);
+    expect(rules).toHaveLength(hasIsp ? 1 : 0);
+    if (hasIsp) expect(rules[0].inbound).toEqual(['ss-isp-in', 'vless-reality-isp-in']);
     for (const name of ['shadowsocks-isp', 'vless-reality-isp']) {
-      expect(names.includes(name)).toBe(isp === 'on');
-      expect(group.includes(name)).toBe(isp === 'on');
+      expect(names.includes(name)).toBe(hasIsp);
+      expect(group.includes(name)).toBe(hasIsp);
     }
     execFileSync(singbox!, ['check', '-c', join(dir, 'config.json')], { stdio: 'pipe' });
     execFileSync(mihomo!, ['-t', '-f', join(dir, 'clash.yaml'), '-d', join(dir, 'data')], { stdio: 'pipe' });
+    if (isp === 'incremental') {
+      const configBytes = readFileSync(join(dir, 'config.json'));
+      const clashBytes = readFileSync(join(dir, 'clash.yaml'));
+      applyIncremental();
+      expect(readFileSync(join(dir, 'config.json'))).toEqual(configBytes);
+      expect(readFileSync(join(dir, 'clash.yaml'))).toEqual(clashBytes);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

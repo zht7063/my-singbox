@@ -3,6 +3,7 @@ import type { System } from '../doctor/system.js';
 import { genKeys } from './gen-keys.js';
 import { genConfig } from './gen-config.js';
 import { confClash } from './conf-clash.js';
+import { ispOutbound } from './isp-outbound.js';
 import type { CliDeps } from './deps.js';
 export type { CliDeps } from './deps.js';
 
@@ -13,6 +14,8 @@ export interface IO {
   cwd?: string;
   env?: Record<string, string | undefined>;
   readLine?(prompt: string): Promise<string | null>;
+  readSecret?(prompt: string): Promise<string | null>;
+  sleep?(ms: number): Promise<void>;
   deps?: Partial<CliDeps>;
 }
 const commands = [
@@ -59,6 +62,8 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
     return 1;
   }
   if (cmd === 'isp-outbound') {
+    let action: 'add' | 'remove' | undefined;
+    let yes = false;
     for (const arg of args) {
       if (['--help', '-h'].includes(arg)) {
         io.stdout(ispUsage);
@@ -68,7 +73,11 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
         io.stderr(`${ispUsage}Error: Unknown argument: ${arg}\n`);
         return 1;
       }
+      if (arg === '--add') action = 'add';
+      if (arg === '--remove') action = 'remove';
+      if (arg === '--yes' || arg === '-y') yes = true;
     }
+    return ispOutbound(io, { action, yes });
   } else if (args.some((a) => ['--help', '-h'].includes(a))) {
     const help =
       cmd === 'doctor'

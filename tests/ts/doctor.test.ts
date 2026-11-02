@@ -161,7 +161,7 @@ describe('doctor', () => {
   });
 });
 describe('CLI', () => {
-  it.each(['init', 'start', 'isp-outbound'])(
+  it.each(['init', 'start'])(
     '%s stub and help',
     async (cmd) => {
       expect((await invoke([cmd])).code).toBe(2);
@@ -169,15 +169,8 @@ describe('CLI', () => {
       expect((await invoke([cmd, '-h'])).code).toBe(0);
     },
   );
-  it.each([
-    ['--add'],
-    ['--remove'],
-    ['-y'],
-    ['--yes'],
-    ['--add', '--remove'],
-    ['--remove', '--add'],
-  ])('isp args %s', async (...args) => {
-    return expect((await invoke(['isp-outbound', ...args])).code).toBe(2);
+  it('isp-outbound help', async () => {
+    expect((await invoke(['isp-outbound', '-h'])).code).toBe(0);
   });
 
   it('isp unknown', async () => {

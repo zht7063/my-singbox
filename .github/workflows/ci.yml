@@ -103,7 +103,7 @@ jobs:
     name: runtime-validation (isp ${{ matrix.isp }})
     strategy:
       matrix:
-        isp: ['off', 'on']
+        isp: ['off', 'on', 'incremental']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -128,7 +128,29 @@ jobs:
           node "$cli" gen-config
           node "$cli" conf-clash
           cd "$GITHUB_WORKSPACE"
-          jq -e --arg isp "$ISP" '
+          apply_incremental() {
+            node --input-type=module - "$dir" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { isDeepStrictEqual } from 'node:util';
+          import { addIspToConfig, addIspToClash } from './dist/index.js';
+          const dir = process.argv[2];
+          const isp = { host: '198.51.100.7', port: 1080, addr: '198.51.100.7:1080', user: 'fixture-user', pass: 'fixture-pass', egressIp: '198.51.100.7' };
+          const configPath = `${dir}/config.json`;
+          const clashPath = `${dir}/clash.yaml`;
+          const original = JSON.parse(readFileSync(configPath, 'utf8'));
+          const updated = addIspToConfig(original, isp);
+          if (!isDeepStrictEqual(original, updated)) writeFileSync(configPath, JSON.stringify(updated, null, 2) + '\n');
+          const clash = readFileSync(clashPath, 'utf8');
+          const updatedClash = addIspToClash(clash);
+          if (clash !== updatedClash) writeFileSync(clashPath, updatedClash);
+          NODE
+          }
+          assertion_isp="$ISP"
+          if [ "$ISP" = incremental ]; then
+            apply_incremental
+            assertion_isp=on
+          fi
+          jq -e --arg isp "$assertion_isp" '
             ([.inbounds[].tag] as $tags |
              [.outbounds[].tag] as $out |
              [(.route.rules // [])[] | select(.outbound == "isp-socks")] as $rules |
@@ -141,7 +163,7 @@ jobs:
                ($out | index("isp-socks") == null) and ($rules | length == 0)
              end)' "$dir/config.json" > /dev/null
           jq -r '.inbounds[].tag' "$dir/config.json"
-          node --input-type=module -e 'import { parse } from "yaml"; import { readFileSync } from "node:fs"; process.stdout.write(JSON.stringify(parse(readFileSync(process.argv[1], "utf8"))))' "$dir/clash.yaml" | jq -e --arg isp "$ISP" '
+          node --input-type=module -e 'import { parse } from "yaml"; import { readFileSync } from "node:fs"; process.stdout.write(JSON.stringify(parse(readFileSync(process.argv[1], "utf8"))))' "$dir/clash.yaml" | jq -e --arg isp "$assertion_isp" '
             [.proxies[].name] as $names |
             ([."proxy-groups"[] | select(.name == "Proxy") | .proxies] | first) as $group |
             if $isp == "on" then
@@ -159,3 +181,10 @@ jobs:
           chmod +x "$work/mihomo"
           "$work/mihomo" -v
           "$work/mihomo" -t -f "$dir/clash.yaml" -d "$work/data"
+          if [ "$ISP" = incremental ]; then
+            cp "$dir/config.json" "$work/config.json"
+            cp "$dir/clash.yaml" "$work/clash.yaml"
+            apply_incremental
+            cmp "$work/config.json" "$dir/config.json"
+            cmp "$work/clash.yaml" "$dir/clash.yaml"
+          fi
