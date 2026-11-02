@@ -187,36 +187,13 @@ When deploying, agents should follow [`skills/deploy-sing-box-node/SKILL.md`](sk
 
 ## Appendix: Quick Docker installation
 
-`init` does not install Docker. The three steps below follow the apt repository installation in the official [Debian](https://docs.docker.com/engine/install/debian/) and [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) documentation, and use the `ID` in `/etc/os-release` to tell the distributions apart.
-
-Remove old packages that conflict with the official ones. The package names are the union of the two documents, so Debian and Ubuntu use the same command. If none of these packages are installed, `apt-get remove` removes nothing.
+`init` does not install Docker.
 
 ```bash
-sudo apt-get remove -y $(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc | cut -f1)
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
 ```
 
-Add the official Docker apt source: write the GPG key, and pick the `debian` or `ubuntu` repository according to `ID`. For the suite name, use `UBUNTU_CODENAME` on Ubuntu, otherwise `VERSION_CODENAME`.
+Log out and back in, or run `newgrp docker`, for the group change to take effect.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg" -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-. /etc/os-release
-sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/${ID}
-Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-sudo apt-get update
-```
-
-Install Docker Engine, the CLI, containerd, the Buildx plugin, and the Compose plugin.
-
-```bash
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-```
+Docker group membership is equivalent to root access.

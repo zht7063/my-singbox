@@ -187,36 +187,13 @@ iptables：   iptables -I INPUT -p tcp --dport 13839 -j ACCEPT（以及 udp 1383
 
 ## 附录：快速安装 Docker
 
-`init` 不安装 Docker。下面三步对应 [Debian](https://docs.docker.com/engine/install/debian/) 与 [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) 官方文档的 apt 仓库安装，并用 `/etc/os-release` 的 `ID` 区分发行版。
-
-卸掉会和官方包冲突的旧包。包名是两份文档的并集，因此 Debian 和 Ubuntu 用同一条命令。这些包都没装时，`apt-get remove` 不会删任何东西。
+`init` 不安装 Docker。
 
 ```bash
-sudo apt-get remove -y $(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc | cut -f1)
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
 ```
 
-添加 Docker 官方 apt 源：写入 GPG 密钥，并按 `ID` 选择 `debian` 或 `ubuntu` 的仓库。套件名在 Ubuntu 上用 `UBUNTU_CODENAME`，否则用 `VERSION_CODENAME`。
+退出并重新登录，或运行 `newgrp docker`，使组变更生效。
 
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg" -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-. /etc/os-release
-sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/${ID}
-Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-sudo apt-get update
-```
-
-安装 Docker Engine、CLI、containerd、Buildx 插件和 Compose 插件。
-
-```bash
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-```
+Docker 组成员权限等同于 root 权限。
