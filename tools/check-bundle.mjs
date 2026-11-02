@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const builtins = new Set(builtinModules.flatMap((x) => [x, `node:${x}`]));
-export function checkBundleText(text) {
+function checkBundleText(text) {
   const imports = [
     ...text.matchAll(
       /(?:\b(?:import|export)\s+(?:[^;]*?\s+from\s*)?|\b(?:require|import)\s*\()\s*["']([^"']+)["']/g,

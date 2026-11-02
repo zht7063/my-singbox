@@ -1,8 +1,7 @@
 import { build } from 'esbuild';
-import { chmod, readFile } from 'node:fs/promises';
+import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 
-const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 await build({
   entryPoints: { cli: 'src/cli/main.ts', index: 'src/index.ts' },
   outdir: 'dist',
@@ -12,9 +11,7 @@ await build({
   bundle: true,
   minify: false,
   sourcemap: false,
-  define: { __VERSION__: JSON.stringify(pkg.version) },
 });
-const { writeFile } = await import('node:fs/promises');
 await writeFile('dist/cli.js', '#!/usr/bin/env node\n' + (await readFile('dist/cli.js', 'utf8')));
 await chmod('dist/cli.js', 0o755);
 execFileSync(

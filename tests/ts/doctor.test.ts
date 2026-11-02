@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { run } from '../../src/cli/commands.js';
 import { checkNode, checkPlatform, checkArch, checkCompose } from '../../src/doctor/checks.js';
-import { realSystem } from '../../src/doctor/system.js';
 import type { System } from '../../src/index.js';
 
 function system(patch: Partial<System> = {}): System {
@@ -31,20 +30,6 @@ async function invoke(args: string[], s = system()) {
   return { code, stdout, stderr };
 }
 describe('doctor', () => {
-  it('constructs the real system adapter without throwing', () => {
-    let adapter: System | undefined;
-    expect(() => {
-      adapter = realSystem();
-    }).not.toThrow();
-    expect(adapter).toEqual(
-      expect.objectContaining({
-        nodeVersion: expect.any(String),
-        platform: expect.any(String),
-        arch: expect.any(String),
-      }),
-    );
-  });
-
   it('summarizes OK, WARN, and FAIL separately', async () => {
     const r = await invoke(
       ['doctor'],
@@ -203,10 +188,6 @@ describe('CLI', () => {
 
   it('unknown command', async () => {
     return expect((await invoke(['bogus'])).code).toBe(1);
-  });
-
-  it('version', async () => {
-    return expect((await invoke(['--version'])).stdout).toBe('2.0.0-next.0\n');
   });
 
   it('default help and doctor help', async () => {

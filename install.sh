@@ -2,6 +2,8 @@
 # Bootstrap Node without sudo. Overrides: MY_SINGBOX_NODE_DIR (default
 # $HOME/.local/node), MY_SINGBOX_NODE_VERSION (v22.23.4),
 # MY_SINGBOX_NODE_MIRROR (download base), MY_SINGBOX_FORCE_NODE_INSTALL=1.
+# MY_SINGBOX_NODE_SHASUMS_BASE: test hook overriding the official checksum trust
+# anchor (default https://nodejs.org/dist); never point it at a mirror.
 set -euo pipefail
 
 legacy='https://github.com/zht7063/my-singbox/releases/tag/v1.1.0'
@@ -105,7 +107,12 @@ elif curl --max-time 5 -fsI https://nodejs.org/dist >/dev/null 2>&1; then
 else
   base=https://npmmirror.com/mirrors/node
 fi
-echo "Using Node source: $base"
+if [[ $version == v22.23.4 ]]; then
+  checksum_source="built-in pin for $version"
+else
+  checksum_source='official nodejs.org SHASUMS256.txt'
+fi
+echo "Using Node source: $base (tarball; checksum: $checksum_source)"
 
 work=$(mktemp -d)
 stage=''
@@ -117,13 +124,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl -fsSL --retry 3 "$base/$version/$file" -o "$work/$file"
-curl -fsSL --retry 3 "$base/$version/SHASUMS256.txt" -o "$work/SHASUMS256.txt"
-expected=$(awk -v file="$file" '$2 == file {print $1}' "$work/SHASUMS256.txt")
+expected=''
+if [[ $version == v22.23.4 ]]; then
+  case $file in
+    node-v22.23.4-linux-arm64.tar.gz)
+      expected=f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9
+      ;;
+    node-v22.23.4-linux-arm64.tar.xz)
+      expected=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
+      ;;
+    node-v22.23.4-linux-x64.tar.gz)
+      expected=b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406
+      ;;
+    node-v22.23.4-linux-x64.tar.xz)
+      expected=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+      ;;
+  esac
+else
+  shasums_base=${MY_SINGBOX_NODE_SHASUMS_BASE:-https://nodejs.org/dist}
+  shasums_base=${shasums_base%/}
+  if ! curl -fsSL --retry 3 "$shasums_base/$version/SHASUMS256.txt" \
+    -o "$work/SHASUMS256.txt"; then
+    echo "ERROR: cannot fetch the official SHASUMS256.txt from $shasums_base/$version/" \
+      '(needed to verify a non-default Node version); refusing to use mirror checksums.' \
+      'Use the default version or retry when nodejs.org is reachable.' >&2
+    exit 1
+  fi
+  expected=$(awk -v file="$file" '$2 == file {print $1}' "$work/SHASUMS256.txt")
+fi
 [[ $expected =~ ^[[:xdigit:]]{64}$ ]] || {
   echo "ERROR: missing or invalid checksum entry for $file" >&2
   exit 1
 }
+curl -fsSL --retry 3 "$base/$version/$file" -o "$work/$file"
 if [[ $hash_tool == sha256sum ]]; then
   actual=$(sha256sum "$work/$file")
 else
