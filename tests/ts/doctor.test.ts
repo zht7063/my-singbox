@@ -176,7 +176,7 @@ describe('doctor', () => {
   });
 });
 describe('CLI', () => {
-  it.each(['init', 'gen-keys', 'gen-config', 'conf-clash', 'start', 'isp-outbound'])(
+  it.each(['init', 'start', 'isp-outbound'])(
     '%s stub and help',
     async (cmd) => {
       expect((await invoke([cmd])).code).toBe(2);

@@ -12,6 +12,8 @@ await build({
   bundle: true,
   minify: false,
   sourcemap: false,
+  // yaml's Node entry uses require('process') inside the ESM bundle.
+  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   define: { __VERSION__: JSON.stringify(pkg.version) },
 });
 const { writeFile } = await import('node:fs/promises');
