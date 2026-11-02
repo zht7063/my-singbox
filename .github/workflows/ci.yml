@@ -2,11 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ts]
   pull_request:
 
 permissions:
   contents: read
+
+env:
+  SING_BOX_VERSION: v1.14.4
+  MIHOMO_VERSION: v1.19.33
 
 jobs:
   lint-and-test:
@@ -28,14 +32,87 @@ jobs:
           docker compose version
 
       - name: ShellCheck
-        run: shellcheck scripts/*.sh tests/*.bash
+        run: shellcheck scripts/*.sh tests/*.bash install.sh
 
       - name: Syntax check (bash -n)
         run: |
-          for f in scripts/*.sh tests/*.bash; do
+          for f in scripts/*.sh tests/*.bash install.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
 
       - name: Bats tests
         run: bats --print-output-on-failure tests/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: |
+          npm run typecheck
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: |
+          npm test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: |
+          npm run build
+          test -f dist/cli.js && test -f dist/index.js
+          node dist/cli.js doctor --help
+          node tools/check-bundle.mjs
+
+  license-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: |
+          npm run license-scan
+
+  runtime-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # P2: plug in generated config.json / clash.yaml with ISP off and on here.
+      - name: Validate sing-box fixture
+        run: |
+          docker run --rm ghcr.io/sagernet/sing-box:${SING_BOX_VERSION} version
+          docker run --rm -v "$PWD/tests/fixtures/validation:/validation:ro" ghcr.io/sagernet/sing-box:${SING_BOX_VERSION} check -c /validation/minimal-singbox.json
+      - name: Validate mihomo fixture
+        run: |
+          work=$(mktemp -d)
+          curl -fsSL --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" -o "$work/mihomo.gz"
+          echo "132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323  $work/mihomo.gz" | sha256sum -c -
+          gunzip "$work/mihomo.gz"
+          chmod +x "$work/mihomo"
+          "$work/mihomo" -v
+          "$work/mihomo" -t -f tests/fixtures/validation/minimal-clash.yaml -d "$work/data"

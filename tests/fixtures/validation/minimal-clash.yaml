@@ -1,0 +1,11 @@
+mixed-port: 18080
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,DIRECT

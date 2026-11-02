@@ -1,0 +1,52 @@
+{
+  "name": "my-singbox",
+  "version": "2.0.0-next.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "my-singbox": "dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zht7063/my-singbox"
+  },
+  "homepage": "https://github.com/zht7063/my-singbox",
+  "bugs": {
+    "url": "https://github.com/zht7063/my-singbox/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "templates/config.json.template",
+    "templates/clash.yaml.template",
+    "compose.yaml",
+    "install.sh",
+    "LICENSE",
+    "README.md",
+    "README_CN.md"
+  ],
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "license-scan": "node tools/license-scan.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

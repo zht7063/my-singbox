@@ -8,7 +8,7 @@
 
 - Shadowsocks 2022（`2022-blake3-aes-128-gcm`），端口 `8388`，TCP 和 UDP。
 - VLESS + REALITY，`flow` 为 `xtls-rprx-vision`，端口 `8443`，仅 TCP。服务端默认 SNI 为 `www.microsoft.com`。
-- 容器镜像 `ghcr.io/sagernet/sing-box:latest`，`network_mode: host`。
+- 容器镜像 `ghcr.io/sagernet/sing-box:v1.14.4`（已固定版本），`network_mode: host`。
 - 客户端配置是 `clash.yaml`。节点为 `shadowsocks` 和 `vless-reality`，位于 `select` 组 `Proxy` 下（默认 `shadowsocks`）。
 
 > **从旧版本升级：** 节点原名 `My-sing-box`、`My-VLESS-Reality`，组原名 `PROXY`，现已改名。服务端端口和凭据不变，但已有的 `clash.yaml` 仍是旧名字。要使用新名字，请删除 `clash.yaml`，重新运行 `bash scripts/conf-clash.sh`，并在**每个客户端里重新导入 `clash.yaml`**（名字变了，客户端里保存的节点和分组选择会丢失）。
@@ -39,7 +39,7 @@ bash scripts/start.sh
 
 还没有 `git` 时，先 `sudo apt-get update && sudo apt-get install -y git`，再克隆。`init.sh` 之后也会装上 `git`。
 
-`SING_BOX_VERSION` 只决定 `gen-keys.sh` 用哪个镜像生成密钥。运行中的容器始终使用 `compose.yaml` 里的 `ghcr.io/sagernet/sing-box:latest`。
+`SING_BOX_VERSION` 只决定 `gen-keys.sh` 用哪个镜像生成密钥。运行中的容器始终使用 `compose.yaml` 里的 `ghcr.io/sagernet/sing-box:v1.14.4`。
 
 | 脚本 | 行为 | 产出 |
 | --- | --- | --- |
