@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, ts]
+    branches: [ts-version]
   pull_request:
 
 permissions:
