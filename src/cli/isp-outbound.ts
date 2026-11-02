@@ -154,7 +154,7 @@ export async function ispOutbound(
       candidate(clashCandidate);
       clashState = `clash.yaml updated (nodes ${NODE_SS_ISP} and ${NODE_VLESS_ISP} added and listed in the ${GROUP_MAIN} group).`;
     } else {
-      warn('clash.yaml does not exist, so only the server config is changed. After running scripts/conf-clash.sh, re-run this script with --add to add the client nodes.');
+      warn('clash.yaml does not exist, so only the server config is changed. After running my-singbox conf-clash, re-run this script with --add to add the client nodes.');
       clashState = 'clash.yaml not found (skipped).';
     }
     const changed = configText !== original.text;

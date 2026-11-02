@@ -57,8 +57,7 @@ node_dir=${MY_SINGBOX_NODE_DIR:-$HOME/.local/node}
 
 hints() {
   printf 'PATH hint: export PATH="%s/bin:$PATH"\n' "$node_dir"
-  echo 'Next: npx my-singbox doctor (package is not published yet in P1).'
-  echo 'From a checkout: node dist/cli.js doctor'
+  echo 'Next: npm i -g my-singbox && my-singbox doctor (or: npx my-singbox doctor).'
 }
 
 usable_node() {
@@ -70,7 +69,7 @@ usable_node() {
 if [[ ${MY_SINGBOX_FORCE_NODE_INSTALL:-0} != 1 ]]; then
   if command -v node >/dev/null 2>&1 && usable_node node; then
     echo "Using Node already on PATH: $(command -v node)"
-    echo 'Next: npx my-singbox doctor (package is not published yet in P1). From a checkout: node dist/cli.js doctor'
+    echo 'Next: npm i -g my-singbox && my-singbox doctor (or: npx my-singbox doctor).'
     exit 0
   fi
   if [[ -x $node_dir/bin/node ]] && usable_node "$node_dir/bin/node"; then

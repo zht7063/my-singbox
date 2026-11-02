@@ -13,20 +13,13 @@ sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
 
 安装程序无需 sudo，将 Node >= 22 安装到 `~/.local/node`；如果 PATH 中已有 Node >= 22，则跳过安装。
 
-> **npm 包 `my-singbox` 尚未发布，目前 `npx my-singbox ...` 无法使用。** 下文示例写作 `npx my-singbox <cmd>`。包发布之前，请改用下面任一方式（均已验证）：
->
-> ```bash
-> # A) 从本仓库的检出目录运行
-> git clone --branch ts-version https://github.com/zht7063/my-singbox.git && cd my-singbox
-> npm ci && npm run build
-> node dist/cli.js doctor   # 代替 "npx my-singbox doctor"
->
-> # B) 安装打包后的 tarball
-> npm pack
-> npm install -g ./my-singbox-*.tgz   # 之后运行 "my-singbox <cmd>"
-> ```
->
-> 请在部署目录（例如 `/opt/sing-box`）中运行命令。方式 A 请使用绝对路径：`node /path/to/my-singbox/dist/cli.js <cmd>`。
+从 npm 安装命令行工具：
+
+```bash
+npm i -g my-singbox   # 之后运行 "my-singbox <cmd>"
+```
+
+也可以无需安装直接运行：`npx my-singbox <cmd>`。下文示例写作 `npx my-singbox <cmd>`；全局安装后可省略 `npx`。请在部署目录（例如 `/opt/sing-box`）中运行命令。
 
 ## 使用
 

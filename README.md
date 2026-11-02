@@ -13,20 +13,13 @@ sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
 
 The installer installs Node >= 22 to `~/.local/node` without sudo; it skips installation if Node >= 22 is already on PATH.
 
-> **The npm package `my-singbox` is not published yet, so `npx my-singbox ...` does not work for now.** Examples below use `npx my-singbox <cmd>`. Until the package is published, use one of these routes instead (both tested):
->
-> ```bash
-> # A) from a checkout of this repository
-> git clone --branch ts-version https://github.com/zht7063/my-singbox.git && cd my-singbox
-> npm ci && npm run build
-> node dist/cli.js doctor   # replaces "npx my-singbox doctor"
->
-> # B) install a packed tarball
-> npm pack
-> npm install -g ./my-singbox-*.tgz   # then run "my-singbox <cmd>"
-> ```
->
-> Run commands from the deployment directory (for example `/opt/sing-box`). For route A, call `node /path/to/my-singbox/dist/cli.js <cmd>` with the absolute path.
+Install the CLI from npm:
+
+```bash
+npm i -g my-singbox   # then run "my-singbox <cmd>"
+```
+
+Or run it without installing: `npx my-singbox <cmd>`. Examples below use `npx my-singbox <cmd>`; after a global install, drop `npx`. Run commands from the deployment directory (for example `/opt/sing-box`).
 
 ## Usage
 

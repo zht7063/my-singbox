@@ -292,14 +292,14 @@ it('AC8[clash: parses as YAML; the ISP nodes are in the Proxy group, nothing els
 
 it('AC8[clash: old node names (My-sing-box / My-VLESS-Reality) are refused with a regenerate hint, nothing written] AC17 legacy nodes fail before writes', async () => {
   h.write('clash.yaml', h.read('clash.yaml').replaceAll('shadowsocks', 'My-sing-box').replaceAll('vless-reality', 'My-VLESS-Reality'));
-  const before = h.snapshot(); failed(await h.add(), 'conf-clash.sh'); nothingWritten(before);
+  const before = h.snapshot(); failed(await h.add(), 'my-singbox conf-clash'); nothingWritten(before);
 });
 
 it('AC8[clash: a missing source node is refused, nothing written] AC17 both prototypes are required', async () => {
   const old = yaml();
   for (let i = 0; i < 2; i++) {
     const doc = structuredClone(old); doc.proxies.splice(i, 1); writeYaml(doc);
-    const before = h.snapshot(); failed(await h.add(), 'conf-clash.sh'); nothingWritten(before);
+    const before = h.snapshot(); failed(await h.add(), 'my-singbox conf-clash'); nothingWritten(before);
   }
 });
 
@@ -312,7 +312,7 @@ it('AC8[clash: unbalanced markers are refused, nothing written] AC17 shell marke
 
 it('AC8[clash: no clash.yaml is not fatal, config is still updated and a hint is printed] AC14 server-only add is supported', async () => {
   rmSync(join(h.dir, 'clash.yaml')); const before = h.snapshot(); const r = await h.add(); ok(r);
-  expect(r.stderr).toContain('clash.yaml does not exist'); expect(outbound().tag).toBe('isp-socks');
+  expect(r.stderr).toContain('clash.yaml does not exist'); expect(r.stderr).toContain('my-singbox conf-clash'); expect(outbound().tag).toBe('isp-socks');
   expect(existsSync(join(h.dir, 'clash.yaml'))).toBe(false);
   ok(await h.remove()); expect(h.snapshot()).toBe(before);
 });
