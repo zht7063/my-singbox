@@ -49,15 +49,6 @@ it.each(fixtures)('AC1/AC6 $id', async ({ id, server, isp }) => {
   expect((await invoke('conf-clash', t)).code).toBe(0);
   expect(sortedJson(t, 'config.json')).toBe(sortedJson(s, 'config.json'));
   expect(parse(read(t, 'clash.yaml'))).toEqual(parse(read(s, 'clash.yaml')));
-  const identical = read(s, 'clash.yaml') === read(t, 'clash.yaml');
-  console.log(`${id}: ISP off Clash byte-identical=${identical} (expected true)`);
-  if (identical) expect(identical).toBe(true);
-  else {
-    // AC1 allows formatting drift when semantic equality is retained; record it.
-    const diff = spawnSync('diff', ['-u', join(s, 'clash.yaml'), join(t, 'clash.yaml')], { env: shellEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    expect(diff.status).toBe(1);
-    console.log(`${id}: ISP off Clash formatting diff\n${diff.stdout}`);
-  }
 
   bash(s, ['-c', sourceIsp + `
 parse_addr "$HARNESS_ADDR"
