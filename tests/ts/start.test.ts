@@ -192,7 +192,7 @@ it('start: extra/unknown args are ignored on success and help is handled generic
   expect(result.code).toBe(0);
   expect(result.stdout).toContain('Self-check passed. Ports: 8443\n');
   privateOutput(result);
-  for (const help of ['--help', '-h']) expect(await invoke('start', dir, {}, [help])).toEqual({ code: 0, stdout: 'Usage: my-singbox start [args]\nEquivalent shell script: scripts/start.sh\n', stderr: '' });
+  for (const help of ['--help', '-h']) expect(await invoke('start', dir, {}, [help])).toEqual({ code: 0, stdout: 'Usage: my-singbox start [args]\n', stderr: '' });
 });
 
 it('start: redacts unexpected inspect status in errors', async () => {

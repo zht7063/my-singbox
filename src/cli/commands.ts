@@ -39,7 +39,7 @@ Options: --help, -h
 const ispUsage = `Usage: my-singbox isp-outbound [--add | --remove] [--yes]
 
   --add      add or update the ISP outbound (ports 13839 and 18444)
-  --remove   remove the ISP outbound and everything this script added
+  --remove   remove the ISP outbound and everything it added
   --yes, -y  do not ask before restarting sing-box
   --help     show this help
 
@@ -86,7 +86,7 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
     const help =
       cmd === 'doctor'
         ? '\nCheck server prerequisites without changing the system.'
-        : ` [args]\nEquivalent shell script: scripts/${cmd}.sh`;
+        : ' [args]';
     io.stdout(`Usage: my-singbox ${cmd}${help}\n`);
     return 0;
   }

@@ -11,7 +11,7 @@ export async function confClash(io: IO): Promise<number> {
   const project = resolve(io.cwd ?? process.cwd());
   const envPath = resolve(project, '.env');
   if (!existsSync(envPath))
-    throw new CliError('.env does not exist. Run scripts/gen-keys.sh first.');
+    throw new CliError('.env does not exist. Run my-singbox gen-keys first.');
   const template = findTemplate('clash.yaml.template', project);
   const path = resolve(project, 'clash.yaml');
   if (existsSync(path))

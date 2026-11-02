@@ -142,7 +142,7 @@ for (const [cmd, file, message] of [
   }
   it(`${cmd}: dies when .env is missing`, async () => {
     const dir = project(null);
-    expect(await invoke(cmd, dir)).toEqual({ code: 1, stdout: '', stderr: 'Error: .env does not exist. Run scripts/gen-keys.sh first.\n' });
+    expect(await invoke(cmd, dir)).toEqual({ code: 1, stdout: '', stderr: 'Error: .env does not exist. Run my-singbox gen-keys first.\n' });
   });
   it.each([false, true])(`${cmd}: ISP enabled=%s`, async (enabled) => {
     const dir = project(fixtureText(enabled));
@@ -259,7 +259,7 @@ it.each([
   const message = `Template does not exist: ${dir}/templates/${file}.template`;
   const lookup = vi.spyOn(templates, 'findTemplate').mockImplementation(() => { throw Error(message); });
   try {
-    expect((await invoke(cmd, dir)).stderr).toBe('Error: .env does not exist. Run scripts/gen-keys.sh first.\n');
+    expect((await invoke(cmd, dir)).stderr).toBe('Error: .env does not exist. Run my-singbox gen-keys first.\n');
     expect(lookup).not.toHaveBeenCalled();
     writeFileSync(join(dir, '.env'), 'malformed env must not be parsed');
     expect((await invoke(cmd, dir)).stderr).toBe(`Error: ${message}\n`);
