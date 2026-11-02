@@ -80,7 +80,7 @@ export async function startNode(opts: {
   if (!existsSync(join(project, 'compose.yaml')))
     throw new Error('compose.yaml does not exist.');
   if (!existsSync(join(project, 'config.json')))
-    throw new Error('config.json does not exist. Run scripts/gen-config.sh first.');
+    throw new Error('config.json does not exist. Run my-singbox gen-config first.');
   const ports = parseListenPorts(readFileSync(join(project, 'config.json'), 'utf8'));
   if (!(await opts.dockerAvailable())) throw new Error('docker is not installed.');
   if ((await deps.run('docker', ['compose', 'version'])).code)

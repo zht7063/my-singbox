@@ -77,8 +77,9 @@ esac
   }, args);
   expect(result.code).toBe(1);
   expect(result.code).toBe(shell.status);
-  expect(result.stderr).toBe(`Error: ${message}\n`);
-  expect(shell.stderr).toBe(result.stderr);
+  // Only wording difference from v1.1.0: npx installs ship no scripts/, so point at the CLI.
+  expect(result.stderr).toBe(`Error: ${message.replace('scripts/gen-config.sh', 'my-singbox gen-config')}\n`);
+  expect(shell.stderr).toBe(`Error: ${message}\n`);
   expect(result.stdout).toBe(shell.stdout);
   expect(deps.tcpOpen).not.toHaveBeenCalled();
   privateOutput(result);
