@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 
 await build({
@@ -14,7 +14,7 @@ await build({
   // yaml's Node entry uses require() inside the ESM bundle.
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
 });
-await writeFile('dist/cli.js', '#!/usr/bin/env node\n' + (await readFile('dist/cli.js', 'utf8')));
+// esbuild preserves the CLI entry's shebang; avoid a second read/write pass.
 await chmod('dist/cli.js', 0o755);
 execFileSync(
   'node_modules/.bin/tsc',

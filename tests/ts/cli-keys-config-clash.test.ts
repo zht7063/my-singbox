@@ -148,7 +148,12 @@ for (const [cmd, file, message] of [
     const dir = project(fixtureText(enabled));
     expect((await invoke(cmd, dir)).code).toBe(0);
     const config = cmd === 'gen-config' ? JSON.parse(read(dir, file)) : parse(read(dir, file));
-    expect(cmd === 'gen-config' ? config.inbounds.length : config.proxies.length).toBe(enabled ? 4 : 2);
+    expect(cmd === 'gen-config' ? config.inbounds.length : config.proxies.length).toBe(2);
+    if (cmd === 'gen-config') {
+      expect(config.outbounds.some((o: { tag: string }) => o.tag === 'isp-socks')).toBe(enabled);
+      expect(config.route.rules[0]).toEqual({ action: 'sniff' });
+      expect(config.route.final).toBe('direct');
+    } else expect(config['proxy-groups'][0].proxies).toEqual(['shadowsocks', 'vless-reality', 'DIRECT']);
   });
 }
 
@@ -236,7 +241,7 @@ it('conf-clash: loads defaults first, unions keys, and lets .env override', asyn
   writeFileSync(join(dir, 'templates/.env.template'), envWithIsp(fixtureText().replace(creds.serverAddress, 'default.example.com'), { addr: '198.51.100.7:1080', user: 'fixture', pass: 'fixture', egressIp: '' }));
   expect((await invoke('conf-clash', dir)).code).toBe(0);
   const config = parse(read(dir, 'clash.yaml'));
-  expect(config.proxies).toHaveLength(4);
+  expect(config.proxies).toHaveLength(2);
   expect(config.proxies[0].server).toBe(creds.serverAddress);
 });
 it('conf-clash: rejects invalid defaults before reading .env with the template label', async () => {

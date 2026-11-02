@@ -29,7 +29,6 @@ export interface Node {
   name: string;
   protocol: Protocol;
   inbound: { tag: string; port: number };
-  egress: 'direct' | 'isp-socks';
   creds: SsCreds | RealityCreds;
 }
 
@@ -48,10 +47,9 @@ export interface Model {
   isp?: IspSocks;
 }
 
-export const SS_PORT = 8388,
-  VLESS_PORT = 8443,
-  SS_ISP_PORT = 13839,
-  VLESS_ISP_PORT = 18444;
+export const SS_PORT = 8388, VLESS_PORT = 8443;
+/** @deprecated Legacy listener ports, retained for migration only. */
+export const SS_ISP_PORT = 13839, VLESS_ISP_PORT = 18444;
 
 export const SS_TAG = 'ss-in',
   VLESS_TAG = 'vless-reality-in',
@@ -133,21 +131,20 @@ export function buildModel(
     protocol: Protocol,
     tag: string,
     port: number,
-    egress: 'direct' | 'isp-socks',
   ): Node => ({
     name,
     protocol,
     inbound: { tag, port },
-    egress,
     creds: protocol === 'shadowsocks' ? ss : reality,
   });
   const model: Model = {
     server,
     nodes: [
-      node(NODE_SS, 'shadowsocks', SS_TAG, SS_PORT, 'direct'),
-      node(NODE_VLESS, 'vless-reality', VLESS_TAG, VLESS_PORT, 'direct'),
+      node(NODE_SS, 'shadowsocks', SS_TAG, SS_PORT),
+      node(NODE_VLESS, 'vless-reality', VLESS_TAG, VLESS_PORT),
     ],
   };
+  if (target === 'client') return model;
   const {
     ISP_SOCKS_ADDR: rawAddr = '',
     ISP_SOCKS_USER: rawUser = '',
@@ -171,15 +168,5 @@ export function buildModel(
     pass,
     ...(ip ? { egressIp: ip } : {}),
   };
-  model.nodes.push(
-    node(NODE_SS_ISP, 'shadowsocks', SS_ISP_TAG, SS_ISP_PORT, 'isp-socks'),
-    node(
-      NODE_VLESS_ISP,
-      'vless-reality',
-      VLESS_ISP_TAG,
-      VLESS_ISP_PORT,
-      'isp-socks',
-    ),
-  );
   return model;
 }

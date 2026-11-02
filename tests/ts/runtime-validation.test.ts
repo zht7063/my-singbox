@@ -6,7 +6,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { beforeAll, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { renderGeneratedEnv } from '../../src/core/env.js';
-import { addIspToClash, addIspToConfig } from '../../src/core/isp.js';
+import { addIspToConfig } from '../../src/core/isp.js';
+import { loadSingboxTemplate } from '../../src/core/render-config.js';
 
 const singbox = process.env.SINGBOX_BIN;
 const mihomo = process.env.MIHOMO_BIN;
@@ -38,16 +39,12 @@ it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated conf
       execFileSync(process.execPath, [cli, command], { cwd: dir, stdio: 'pipe' });
     const applyIncremental = () => {
       const configPath = join(dir, 'config.json');
-      const clashPath = join(dir, 'clash.yaml');
       const original = JSON.parse(readFileSync(configPath, 'utf8'));
       const updated = addIspToConfig(original, {
         host: '198.51.100.7', port: 1080, addr: '198.51.100.7:1080',
         user: 'fixture-user', pass: 'fixture-pass', egressIp: '198.51.100.7',
-      });
+      }, loadSingboxTemplate().route);
       if (!isDeepStrictEqual(original, updated)) writeFileSync(configPath, JSON.stringify(updated, null, 2) + '\n');
-      const clash = readFileSync(clashPath, 'utf8');
-      const updatedClash = addIspToClash(clash);
-      if (clash !== updatedClash) writeFileSync(clashPath, updatedClash);
     };
     if (isp === 'incremental') applyIncremental();
     const hasIsp = isp !== 'off';
@@ -58,14 +55,14 @@ it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated conf
     const rules = (config.route?.rules ?? []).filter((rule: { outbound: string }) => rule.outbound === 'isp-socks');
     const names = clash.proxies.map((proxy: { name: string }) => proxy.name);
     const group = clash['proxy-groups'].find((item: { name: string }) => item.name === 'Proxy').proxies;
-    for (const tag of ['ss-isp-in', 'vless-reality-isp-in']) expect(tags.includes(tag)).toBe(hasIsp);
+    expect(tags).toEqual(['ss-in', 'vless-reality-in']);
+    expect(config.inbounds.map((item: { listen_port: number }) => item.listen_port)).toEqual([8388, 8443]);
     expect(outbounds.includes('isp-socks')).toBe(hasIsp);
-    expect(rules).toHaveLength(hasIsp ? 1 : 0);
-    if (hasIsp) expect(rules[0].inbound).toEqual(['ss-isp-in', 'vless-reality-isp-in']);
-    for (const name of ['shadowsocks-isp', 'vless-reality-isp']) {
-      expect(names.includes(name)).toBe(hasIsp);
-      expect(group.includes(name)).toBe(hasIsp);
-    }
+    expect(rules).toEqual(hasIsp ? loadSingboxTemplate().route!.rules!.filter((rule) => (rule as { outbound?: string }).outbound === 'isp-socks') : []);
+    expect(config.route.rules[0]).toEqual({ action: 'sniff' });
+    expect(config.route.final).toBe('direct');
+    expect(names).toEqual(['shadowsocks', 'vless-reality']);
+    expect(group).toEqual(['shadowsocks', 'vless-reality', 'DIRECT']);
     execFileSync(singbox!, ['check', '-c', join(dir, 'config.json')], { stdio: 'pipe' });
     execFileSync(mihomo!, ['-t', '-f', join(dir, 'clash.yaml'), '-d', join(dir, 'data')], { stdio: 'pipe' });
     if (isp === 'incremental') {

@@ -62,7 +62,8 @@ it('init: re-runs keep existing files byte-for-byte and report them', async () =
   expect(result.code).toBe(0);
   expect(files.map((file) => read(dir, file))).toEqual(before);
   for (const file of files.slice(1)) expect(result.stdout).toContain(`${file} already exists, keeping it.\n`);
-  expect(result.stdout).toContain('  13839/tcp\n  13839/udp\n  18444/tcp\n');
+  expect(result.stdout).toContain('  8388/tcp\n  8388/udp\n  8443/tcp\n');
+  expect(result.stdout).not.toMatch(/13839|18444/);
   expect(deps.runSingbox).not.toHaveBeenCalled();
   privateOutput(result);
 });
@@ -150,7 +151,10 @@ it('composeImageTag: reads the pinned repository tag and ignores comments and ot
   expect(composeImageTag('# image: ghcr.io/sagernet/sing-box:wrong\nimage: other:wrong\n  image: ghcr.io/sagernet/sing-box:v1.13.9 # pinned\n')).toBe('v1.13.9');
   expect(() => composeImageTag('image: other:tag')).toThrow('sing-box image tag not found in compose.yaml.');
 });
-it('firewallPorts: derives TCP and Shadowsocks UDP ports, including ISP inbounds', () => {
-  expect(firewallPorts(JSON.stringify(renderSingbox(fixtureModel(), loadSingboxTemplate())))).toEqual(['8388/tcp', '8388/udp', '8443/tcp']);
-  expect(firewallPorts(JSON.stringify(renderSingbox(fixtureModel(true), loadSingboxTemplate())))).toEqual(['8388/tcp', '8388/udp', '8443/tcp', '13839/tcp', '13839/udp', '18444/tcp']);
+it('firewallPorts: derives TCP and Shadowsocks UDP ports independently of ISP', () => {
+  for (const enabled of [false, true])
+    expect(firewallPorts(JSON.stringify(renderSingbox(fixtureModel(enabled), loadSingboxTemplate())))).toEqual(['8388/tcp', '8388/udp', '8443/tcp']);
+  const custom = renderSingbox(fixtureModel(), loadSingboxTemplate());
+  custom.inbounds.push({ type: 'shadowsocks', tag: 'custom', listen_port: 9000 });
+  expect(firewallPorts(JSON.stringify(custom))).toEqual(['8388/tcp', '8388/udp', '8443/tcp', '9000/tcp', '9000/udp']);
 });

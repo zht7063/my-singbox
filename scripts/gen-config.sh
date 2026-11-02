@@ -122,6 +122,16 @@ for key in VLESS_UUID REALITY_PRIVATE_KEY REALITY_SHORT_ID SS_PASSWORD; do
     fi
 done
 
+# The shared TypeScript template contains optional server-side ISP rules. This
+# legacy generator ignores ISP settings; its separate ISP command still manages
+# the old listener-based policy. Do not emit rules targeting a missing outbound.
+command -v jq >/dev/null 2>&1 || die "jq is required to render the shared config template."
+rendered=$(printf '%s\n' "$rendered" | jq '
+    if .route.rules then
+        .route.rules |= map(select(.outbound != "isp-socks"))
+    else . end
+')
+
 (
     set -o noclobber
     printf '%s\n' "$rendered" > "$CONFIG_FILE"

@@ -74,7 +74,7 @@ it("AC8[env.template: ISP_SOCKS_EGRESS_IP is the fourth key, commented out and e
 });
 
 it("AC8[env.template: carries the 'filled automatically' comment]", async () => {
-  expect(readTemplate('.env.template')).toContain('# Optional; filled automatically by scripts/isp-outbound.sh, no need to edit manually.');
+  expect(readTemplate('.env.template')).toContain('# Optional; managed by my-singbox isp-outbound --add / --remove.');
 });
 
 it("AC8[env.template: output is identical to a template that has no ISP block at all]", async () => {

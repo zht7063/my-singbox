@@ -46,5 +46,24 @@
       "type": "direct",
       "tag": "direct"
     }
-  ]
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "domain_suffix": [
+          "anthropic.com",
+          "claude.ai",
+          "claude.com",
+          "claudeusercontent.com",
+          "http-intake.logs.us5.datadoghq.com",
+          "browser-intake-us5-datadoghq.com"
+        ],
+        "outbound": "isp-socks"
+      }
+    ],
+    "final": "direct"
+  }
 }

@@ -126,9 +126,6 @@ describe('doctor', () => {
       '8388/tcp',
       '8388/udp',
       '8443/tcp',
-      '13839/tcp',
-      '13839/udp',
-      '18444/tcp',
       'curl -fsSL https://get.docker.com | sudo sh',
       'sudo usermod -aG docker',
       'equivalent to root',
@@ -139,6 +136,7 @@ describe('doctor', () => {
     }
     expect(exec.mock.calls.every(([f]) => !['sudo', 'usermod', 'curl'].includes(f))).toBe(true);
     expect(r.stdout).not.toContain('SECRET');
+    expect(r.stdout).not.toMatch(/13839|18444/);
   });
 
   it('existing docker member gets daemon advice', async () => {

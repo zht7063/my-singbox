@@ -5,11 +5,11 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { createConnection, Socket } from 'node:net';
-import { parse, parseDocument, stringify } from 'yaml';
+import { parse, stringify } from 'yaml';
 import {
   IspError, ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, MANAGED_FILES, GROUP_MAIN,
   envGet, envHasIsp, checkIspConfig, configHasIsp, clashHasIsp,
-  addIspToConfig, addIspToClash, makeTmpPath, installFile, makeBackup,
+  addIspToConfig, removeIspFromConfig, addIspToClash, makeTmpPath, installFile, makeBackup,
   findCleanBackup, restoreBackup, sweepStaleTmp, withLock, IspService,
 } from '../../src/index.js';
 import { ENV_HEADER, ENV_HEADER_NOEOL, envWithIsp, parseEnv } from '../../src/core/env.js';
@@ -37,7 +37,7 @@ function canonical(value: unknown): string {
 
 it('AC2 package exports ISP constants and IspError', () => {
   expect([ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, GROUP_MAIN]).toEqual(['.isp-backup', '.isp.lock', '.isp-tmp.', 'Proxy']);
-  expect(MANAGED_FILES).toEqual(['config.json', 'clash.yaml', '.env']);
+  expect(MANAGED_FILES).toEqual(['config.json', '.env']);
   const error = new IspError('fixture failure');
   expect(error).toBeInstanceOf(Error); expect(error.name).toBe('IspError');
 });
@@ -63,13 +63,13 @@ it('AC2 ISP detectors recognize partial state and legacy markers without false p
   expect(clashHasIsp('rules: [MATCH,DIRECT]\n')).toBe(false);
 });
 
-it('AC2 checkIspConfig refuses invalid shapes, missing prototypes and conflicting ports', () => {
+it('AC2 checkIspConfig refuses invalid shapes and missing prototypes but permits unrelated legacy-port users', () => {
   for (const value of [null, [], 'invalid', 3]) expect(() => checkIspConfig(value)).toThrow('not valid JSON');
   for (const value of [{}, { inbounds: [] }, { inbounds: [{ tag: 'ss-in' }] }])
     expect(() => checkIspConfig(value)).toThrow('no inbounds tagged');
   for (const port of [13839, 18444]) {
     const config = baseConfig(); config.inbounds.push({ tag: 'custom', listen_port: port });
-    expect(() => addIspToConfig(config, socks)).toThrow('already uses port');
+    expect(addIspToConfig(config, socks).inbounds).toEqual(config.inbounds);
   }
   expect(() => checkIspConfig(addIspToConfig(baseConfig(), socks))).not.toThrow();
 });
@@ -79,87 +79,81 @@ it('AC2 AC17 addIspToConfig clones without mutating input and is deeply idempote
   const next = addIspToConfig(old, socks);
   expect(old).toEqual(original); expect(next).not.toBe(old);
   expect(addIspToConfig(next, socks)).toEqual(next);
-  const clonedUsers = next.inbounds[3].users as Record<string, unknown>[];
+  const clonedUsers = next.inbounds[1].users as Record<string, unknown>[];
   clonedUsers[0].name = 'clone-only'; expect(old).toEqual(original);
 });
 
 it('AC2 AC17 addIspToConfig updates existing ISP entries in place and preserves user extensions', () => {
   const config = addIspToConfig(baseConfig(), socks);
-  config.inbounds[2].custom = 'keep'; config.inbounds[2].listen_port = 99;
+  config.inbounds[0].custom = 'keep';
   config.outbounds![1].custom = { keep: true };
-  config.route!.rules![0] = { inbound: ['old'], outbound: 'isp-socks', custom: true };
-  config.route!.rules!.unshift({ domain: ['example.test'], outbound: 'direct' });
+  config.route = { final: 'custom-final', rules: [
+    { action: 'sniff' },
+    { domain: ['example.test'], outbound: 'direct' },
+    { domain_suffix: ['custom.test'], network: 'tcp', outbound: 'isp-socks', custom: true },
+    { ip_cidr: ['192.0.2.0/24'], outbound: 'isp-socks' },
+  ] };
   config.custom = ['keep'];
-  const next = addIspToConfig(config, { ...socks, host: '192.0.2.9', port: 2080, user: 'other-fake-user', pass: 'other-fake-pass' });
-  expect(next.inbounds).toHaveLength(4); expect(next.inbounds[2]).toMatchObject({ listen_port: 13839, custom: 'keep' });
+  const original = structuredClone(config);
+  const next = addIspToConfig(config, { ...socks, host: '192.0.2.9', port: 2080, user: 'other-fake-user', pass: 'other-fake-pass' }, loadSingboxTemplate(root).route);
+  expect(next.inbounds).toEqual(config.inbounds);
   expect(next.outbounds).toHaveLength(2);
   expect(next.outbounds![1]).toMatchObject({ server: '192.0.2.9', server_port: 2080, custom: { keep: true } });
-  expect(next.route!.rules).toEqual([
-    { domain: ['example.test'], outbound: 'direct' },
-    { inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks', custom: true },
-  ]);
-  expect(next.custom).toEqual(['keep']);
+  expect(next.route).toEqual(config.route);
+  expect(next.custom).toEqual(['keep']); expect(config).toEqual(original);
 });
 
 it('AC2 addIspToConfig creates missing outbounds and route.rules containers', () => {
   for (const route of [undefined, {}, { final: 'direct' }]) {
     const config = { inbounds: baseConfig().inbounds, ...(route ? { route } : {}) };
     const next = addIspToConfig(config, socks);
-    expect(next.outbounds).toHaveLength(1); expect(next.route!.rules).toHaveLength(1);
-    if (route && 'final' in route) expect(next.route!.final).toBe('direct');
+    expect(next.outbounds).toHaveLength(1);
+    expect(next.route).toEqual({ rules: [{ action: 'sniff' }], final: 'direct' });
+    expect(next.inbounds).toEqual(config.inbounds);
   }
 });
 
-it('AC2 AC4 AC17 addIspToClash is byte-idempotent and appends nodes after user proxies', () => {
+it('AC2 AC4 AC17 deprecated addIspToClash validates and returns bytes unchanged', () => {
   const doc = parse(baseClash());
   doc.proxies.push({ name: 'custom', type: 'socks5', server: '192.0.2.9', port: 1000 });
   doc.rules.unshift('DOMAIN,custom.test,DIRECT');
-  const text = '# custom header\n' + stringify(doc), next = addIspToClash(text);
-  expect(addIspToClash(next)).toBe(next);
-  expect(next).toContain('# custom header');
-  expect(parse(next).proxies.map((p: { name: string }) => p.name)).toEqual(['shadowsocks', 'vless-reality', 'custom', 'shadowsocks-isp', 'vless-reality-isp']);
-  expect(parse(next).rules).toEqual(doc.rules);
+  const text = '# custom header\n' + stringify(doc).trimEnd();
+  expect(addIspToClash(text)).toBe(text);
+  expect(addIspToClash(addIspToClash(text))).toBe(text);
+  expect(parse(text).proxies).toHaveLength(3);
 });
 
-it('AC2 AC17 addIspToClash strips comment metadata recursively from clones only', () => {
-  const text = baseClash()
-    .replace('  - name: "shadowsocks"', '\n  # ss annotation\n  - name: "shadowsocks" # ss inline')
-    .replace('  - name: vless-reality', '\n  # vless annotation\n  - name: vless-reality')
-    .replace('    reality-opts:', '    # nested annotation\n    reality-opts:')
-    .replace('      public-key:', '      # nested key annotation\n      public-key:');
-  const next = addIspToClash(text);
-  for (const comment of ['# ss annotation', '# ss inline', '# vless annotation', '# nested annotation', '# nested key annotation'])
-    expect(next.split(comment)).toHaveLength(2);
-  const doc = parseDocument(next);
-  // A clone must not inherit a blank line before its source entry either.
-  expect(doc.getIn(['proxies', 2], true)).not.toHaveProperty('spaceBefore', true);
-  expect(doc.getIn(['proxies', 3], true)).not.toHaveProperty('spaceBefore', true);
-  expect(addIspToClash(next)).toBe(next);
+it('AC2 deprecated addIspToClash preserves legacy nodes without creating or repairing them', () => {
+  const doc = parse(baseClash());
+  doc.proxies.push({ ...doc.proxies[0], name: 'shadowsocks-isp', port: 99, custom: true });
+  const text = '# legacy client requires explicit regeneration\n' + stringify(doc);
+  expect(addIspToClash(text)).toBe(text);
 });
 
-it('AC2 AC4 AC17 addIspToClash repairs existing ports and missing group names without replacing user properties', () => {
-  const doc = parse(addIspToClash(baseClash()));
-  doc.proxies[2].port = 9; doc.proxies[2].custom = 'keep'; doc.proxies[3].port = 10;
-  doc['proxy-groups'][0].proxies = ['vless-reality-isp', 'DIRECT', 'shadowsocks'];
-  const next = parse(addIspToClash(stringify(doc)));
-  expect(next.proxies).toHaveLength(4);
-  expect(next.proxies[2]).toMatchObject({ port: 13839, custom: 'keep' }); expect(next.proxies[3].port).toBe(18444);
-  expect(next['proxy-groups'][0].proxies).toEqual(['vless-reality-isp', 'DIRECT', 'shadowsocks', 'shadowsocks-isp']);
+it.each(['duplicate', 'wrong type'])('AC2 outbound upsert rejects reserved tag conflicts without mutating input: %s', (kind) => {
+  const config = addIspToConfig(baseConfig(), socks);
+  if (kind === 'duplicate') config.outbounds!.push({ ...config.outbounds![1] });
+  else config.outbounds![1].type = 'direct';
+  const before = structuredClone(config);
+  expect(() => addIspToConfig(config, socks)).toThrow(kind === 'duplicate' ? /Duplicate outbound/ : /type socks/);
+  expect(config).toEqual(before);
 });
 
-it('AC2 AC9 addIspToClash refuses invalid YAML, bad prototypes, missing groups and private keys', () => {
+it('AC2 route defaults append only ISP rules after existing rules and are deeply cloned', () => {
+  const config = baseConfig();
+  config.route = { final: 'custom', rules: [{ action: 'route', outbound: 'direct' }], custom: true };
+  const defaults = { rules: [{ action: 'sniff' }, { domain_suffix: ['template.test'], outbound: 'isp-socks', custom: { keep: true } }, { domain: ['unrelated.test'], outbound: 'direct' }], final: 'ignored', custom: 'ignored' };
+  const original = structuredClone(defaults);
+  const next = addIspToConfig(config, socks, defaults);
+  expect(next.route).toEqual({ ...config.route, rules: [{ action: 'sniff' }, ...config.route.rules!, defaults.rules[1]] });
+  (next.route!.rules![2] as { custom: { keep: boolean } }).custom.keep = false;
+  expect(defaults).toEqual(original);
+  expect(addIspToConfig(config, socks).route!.rules).toEqual([{ action: 'sniff' }, ...config.route.rules!]);
+});
+
+it('AC2 AC9 deprecated addIspToClash refuses invalid YAML and private keys without requiring node prototypes', () => {
   expect(() => addIspToClash('proxies: [')).toThrow('not valid YAML');
-  const original = parse(baseClash());
-  for (const kind of ['missing proxies', 'missing ss', 'missing vless', 'wrong port', 'missing groups', 'missing list']) {
-    const doc = structuredClone(original);
-    if (kind === 'missing proxies') delete doc.proxies;
-    if (kind === 'missing ss') doc.proxies.shift();
-    if (kind === 'missing vless') doc.proxies.pop();
-    if (kind === 'wrong port') doc.proxies[0].port = 12;
-    if (kind === 'missing groups') delete doc['proxy-groups'];
-    if (kind === 'missing list') delete doc['proxy-groups'][0].proxies;
-    expect(() => addIspToClash(stringify(doc)), kind).toThrow(IspError);
-  }
+  for (const text of ['proxies: []\n', 'rules: [MATCH,DIRECT]\n']) expect(addIspToClash(text)).toBe(text);
   for (const key of ['REALITY_PRIVATE_KEY', creds.realityPrivateKey]) {
     expect(() => addIspToClash(baseClash() + `# ${key}\n`, creds.realityPrivateKey)).toThrow('Refusing to write REALITY_PRIVATE_KEY');
     expect(() => addIspToClash(addIspToClash(baseClash()) + `# ${key}\n`, creds.realityPrivateKey)).toThrow('Refusing to write REALITY_PRIVATE_KEY');
@@ -169,7 +163,7 @@ it('AC2 AC9 addIspToClash refuses invalid YAML, bad prototypes, missing groups a
 it('AC1 AC2 AC4 fresh ISP rendering and incremental additions are semantically equal including array order', () => {
   const model = buildModel(parseEnv(envWithIsp(fixtureText(), isp)));
   const direct = fixtureModel(), template = loadSingboxTemplate(root), clashTemplate = read(root, 'templates/clash.yaml.template');
-  expect(canonical(addIspToConfig(renderSingbox(direct, template), model.isp!)))
+  expect(canonical(addIspToConfig(renderSingbox(direct, template), model.isp!, template.route)))
     .toBe(canonical(renderSingbox(model, template)));
   expect(parse(addIspToClash(renderClash(direct, clashTemplate))))
     .toEqual(parse(renderClash(model, clashTemplate)));
@@ -212,7 +206,6 @@ it('AC2 AC7 findCleanBackup chooses newest clean bytes, rejecting ISP in any fil
   writeFileSync(join(dir, '.env'), fixtureText() + '# newest clean\n'); const newest = makeBackup(dir);
   const variants = [
     { file: '.env', text: 'ISP_SOCKS_USER=\n' },
-    { file: 'clash.yaml', text: 'proxies: [{name: shadowsocks-isp}]\n' },
     { file: 'config.json', text: JSON.stringify(addIspToConfig(baseConfig(), socks)) },
     { file: 'config.json', text: '{invalid' },
   ];
@@ -224,14 +217,23 @@ it('AC2 AC7 findCleanBackup chooses newest clean bytes, rejecting ISP in any fil
   rmSync(newest, { recursive: true }); expect(findCleanBackup(dir)).toBe(first);
 });
 
-it('AC2 AC7 partial backups restore only files actually present', () => {
+it('AC2 AC7 backups restore original absence of managed files while ignoring Clash even in old backups', () => {
   const dir = project(), backup = makeBackup(dir);
-  writeFileSync(join(dir, 'config.json'), 'keep-current-config');
+  writeFileSync(join(dir, 'config.json'), 'new-config');
   writeFileSync(join(dir, 'clash.yaml'), 'keep-current-clash');
+  writeFileSync(join(backup, 'clash.yaml'), 'historical-client-bytes');
   writeFileSync(join(dir, '.env'), 'modified'); restoreBackup(dir, backup);
   expect(read(dir, '.env') === fixtureText()).toBe(true);
-  expect(read(dir, 'config.json')).toBe('keep-current-config'); expect(read(dir, 'clash.yaml')).toBe('keep-current-clash');
-  expect(findCleanBackup(dir)).toBe(backup);
+  expect(existsSync(join(dir, 'config.json'))).toBe(false);
+  expect(read(dir, 'clash.yaml')).toBe('keep-current-clash');
+});
+
+it('AC2 AC7 backups honor an explicit managed-file selection', () => {
+  const dir = project(); writeConfig(dir, baseConfig());
+  const before = read(dir, 'config.json'), backup = makeBackup(dir, ['config.json']);
+  writeFileSync(join(dir, '.env'), 'keep new env'); writeFileSync(join(dir, 'config.json'), 'changed');
+  restoreBackup(dir, backup, ['config.json']);
+  expect(read(dir, 'config.json')).toBe(before); expect(read(dir, '.env')).toBe('keep new env');
 });
 
 it('AC2 makeTmpPath is unique and sweepStaleTmp removes only prefixed regular files', () => {
@@ -317,7 +319,6 @@ it('AC2 IspService listener fallback reports UDP unknown and probes TCP without 
   const { h, service, output } = await serviceFixture(); h.env.PATH = join(h.dir, 'empty');
   expect(await service.portListening('udp', 13839)).toBe('unknown');
   expect(await service.waitListening('udp', 13839)).toBe(true);
-  await service.portsFree(); expect(output().stderr).toContain('Skipping the check that ports');
   expect(output().stderr).toContain('Skipping the UDP listener check');
   for (const event of ['connect', 'error']) {
     const socket = new Socket(); vi.spyOn(socket, 'destroy');
@@ -334,10 +335,62 @@ it('AC2 IspService waits exactly fifteen injected sleeps for missing TCP or UDP 
   h.set('listeners', ''); expect(await service.waitListening('tcp', 8388)).toBe(false);
   expect(sleep).toHaveBeenCalledTimes(15); expect(sleep).toHaveBeenCalledWith(1000);
   sleep.mockClear(); expect(await service.verifyService(false)).toBe(false);
-  expect(output().stderr).toContain('Port 8388/tcp is not accepting connections');
-  h.set('listeners', 'tcp 8388\ntcp 8443\ntcp 13839\ntcp 18444\n'); sleep.mockClear();
+  expect(output().stderr).toContain('Port 8388/tcp is not listening');
+  h.set('listeners', 'tcp 8388\ntcp 8443\n'); sleep.mockClear();
   expect(await service.verifyService(true)).toBe(false); expect(sleep).toHaveBeenCalledTimes(15);
-  expect(output().stderr).toContain('Port 13839/udp is not listening');
+  expect(output().stderr).toContain('Port 8388/udp is not listening');
+  h.set('listeners', 'tcp 8388\nudp 8388\ntcp 8443\n'); sleep.mockClear();
+  expect(await service.verifyService(true)).toBe(true);
+  expect(await service.verifyService(false)).toBe(true);
+  expect(sleep).not.toHaveBeenCalled();
+});
+
+it('AC2 remove targets ISP state and preserves unrelated content without mutating input', () => {
+  const config = addIspToConfig(baseConfig(), socks, loadSingboxTemplate(root).route);
+  config.outbounds!.push({ type: 'direct', tag: 'custom', custom: true });
+  config.route!.rules!.push({ domain_suffix: ['later.test'], outbound: 'custom' });
+  config.dns = { servers: [{ tag: 'dns', address: '1.1.1.1' }] };
+  const original = structuredClone(config), next = removeIspFromConfig(config);
+  expect(next).toEqual({ ...config, outbounds: config.outbounds!.filter((o) => o.tag !== 'isp-socks'), route: { ...config.route, rules: [{ action: 'sniff' }, { domain_suffix: ['later.test'], outbound: 'custom' }] } });
+  expect(config).toEqual(original); expect(removeIspFromConfig(next)).toEqual(next);
+});
+
+it.each(['add', 'remove'])('AC2 %s migrates known legacy inbounds and dedicated rules safely', (action) => {
+  const config = baseConfig();
+  config.inbounds.push({ ...config.inbounds[0], tag: 'ss-isp-in', listen_port: 13839 }, { ...config.inbounds[1], tag: 'vless-reality-isp-in', listen_port: 18444 });
+  config.route!.rules!.push({ inbound: ['ss-isp-in', 'vless-reality-isp-in'], outbound: 'isp-socks' }, { inbound: ['ss-isp-in', 'ss-in'], domain: ['custom.test'], outbound: 'direct' });
+  const next = action === 'add' ? addIspToConfig(config, socks, loadSingboxTemplate(root).route) : removeIspFromConfig(config);
+  expect(next.inbounds.map((i) => i.tag)).toEqual(['ss-in', 'vless-reality-in']);
+  expect(next.route!.rules).toContainEqual({ inbound: ['ss-in'], domain: ['custom.test'], outbound: 'direct' });
+  expect(JSON.stringify(next.route)).not.toContain('ss-isp-in');
+});
+
+it.each(['add', 'remove'])('AC2 %s refuses a legacy-only custom matcher instead of broadening it', (action) => {
+  const config = baseConfig();
+  config.route!.rules!.push({ inbound: ['ss-isp-in'], domain_suffix: ['custom.test'], outbound: 'direct' });
+  const before = structuredClone(config);
+  expect(() => action === 'add' ? addIspToConfig(config, socks) : removeIspFromConfig(config)).toThrow(/migrat/i);
+  expect(config).toEqual(before);
+});
+
+it.each(['final', 'detour', 'nested', 'legacy reference'])('AC2 remove refuses unsupported ISP dependencies before mutation: %s', (kind) => {
+  const config = addIspToConfig(baseConfig(), socks, loadSingboxTemplate(root).route);
+  if (kind === 'final') config.route!.final = 'isp-socks';
+  if (kind === 'detour') config.outbounds!.push({ type: 'direct', tag: 'custom', detour: 'isp-socks' });
+  if (kind === 'nested') config.route!.rules!.push({ type: 'logical', mode: 'or', rules: [{ outbound: 'isp-socks' }] });
+  if (kind === 'legacy reference') config.custom = { inbound: 'ss-isp-in' };
+  const before = structuredClone(config);
+  expect(() => removeIspFromConfig(config)).toThrow(/ISP.*reference|isp-socks|ss-isp-in|migrat/i);
+  expect(config).toEqual(before);
+});
+
+it('AC2 IspService verifies actual configured ports including Shadowsocks UDP', async () => {
+  const { h, service } = await serviceFixture();
+  const config = h.config(); config.inbounds[0].listen_port = 9001; config.inbounds[1].listen_port = 9002;
+  writeConfig(h.dir, config); h.set('listeners', 'tcp 9001\nudp 9001\ntcp 9002\n');
+  expect(await service.verifyService(true)).toBe(true);
+  h.set('listeners', 'tcp 9001\ntcp 9002\n');
+  expect(await service.verifyService(false)).toBe(false);
 });
 
 it('AC2 IspService egress retries invalid responses and sends quoted credentials only over stdin', async () => {

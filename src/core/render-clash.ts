@@ -41,11 +41,9 @@ export function renderClash(model: Model, templateText: string): string {
   }
   proxies.items = model.nodes.map((n) => {
     const proto = prototypes.get(n.protocol)!;
-    if (n.egress === 'direct') return proto;
-    const clone = proto.clone();
-    clone.set('name', n.name);
-    clone.set('port', n.inbound.port);
-    return clone;
+    proto.set('name', n.name);
+    proto.set('port', n.inbound.port);
+    return proto;
   });
   const group = groups.items.find((g) => isMap(g) && g.get('name') === 'Proxy');
   const list = isMap(group) ? group.get('proxies', true) : null;

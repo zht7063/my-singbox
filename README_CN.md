@@ -50,7 +50,11 @@ npx my-singbox isp-outbound --add
 npx my-singbox isp-outbound --remove
 ```
 
-添加 ISP SOCKS5 出站（会询问代理地址和凭据）或移除它。不指定操作时显示菜单；`--yes` 或 `-y` 跳过重启确认，`--help` 显示选项。添加操作创建 13839 TCP/UDP 上的 `shadowsocks-isp` 和 18444 TCP 上的 `vless-reality-isp`，并在 `clash.yaml` 存在时加入其中。请在客户端重新导入该文件。命令将备份保存到 `.isp-backup`；移除时恢复添加 ISP 前的备份，因此受管理文件在此之后的修改不会保留在恢复后的文件中。命令不会修改防火墙规则。
+添加或更新 ISP SOCKS5 出站（会询问代理地址和凭据），或移除它。不指定操作时显示菜单；`--yes` 或 `-y` 跳过重启确认，`--help` 显示选项。
+
+Clash 保留现有规则、规则集和 DNS 设置，决定流量由客户端直连还是进入 VPS。服务端 `config.json` 独立决定 VPS 的出口：配置 ISP 时，sing-box 先嗅探流量，将模板中指定的域名交给 `isp-socks`，其余流量默认走 `direct`；未配置 ISP 时省略可选 ISP 规则，默认出口仍为 `direct`。两种模式都只使用 8388 和 8443 上的两个基础入站及对应客户端节点，ISP 不新增监听端口或客户端节点。
+
+添加和移除只管理 `config.json` 与 `.env`，备份及失败回滚也仅涉及这两个文件，始终不读写 `clash.yaml`。移除直接修改当前配置，保留无关路由和后续自定义修改，无需添加 ISP 前的备份；更新凭据时保留已有 ISP 路由条件。默认域名、自定义路由顺序和旧配置迁移详见 [ISP 路由与迁移说明](docs/ts/isp-outbound.md)。
 
 ### doctor
 
@@ -81,7 +85,7 @@ npx my-singbox start
 
 ## 防火墙和端口
 
-在本机防火墙和云安全组中开放 8388/tcp、8388/udp 和 8443/tcp。使用 ISP 出站时，还需开放 13839/tcp、13839/udp 和 18444/tcp。工具不会修改防火墙规则。
+在本机防火墙和云安全组中开放 8388/tcp、8388/udp 和 8443/tcp。ISP 出站使用相同的监听端口。工具不会修改防火墙规则。
 
 ## 安装 Docker
 
@@ -112,7 +116,7 @@ sudo usermod -aG docker "$USER"
 
 ## 旧版 shell（v1.1.0）
 
-参见 [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0) 和 [shell-version 分支](https://github.com/zht7063/my-singbox/tree/shell-version)。
+参见 [v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0) 和 [shell-version 分支](https://github.com/zht7063/my-singbox/tree/shell-version)。旧版 ISP 流程使用额外的服务端端口及客户端节点；TypeScript CLI 改为独立服务端路由，ISP 行为不再与旧版完全相同。服务端按已知标签迁移旧 ISP 入站。若要替换旧四节点客户端配置，请先备份 `clash.yaml`，将原文件移走，再运行 `npx my-singbox conf-clash` 并重新导入客户端。生成器仍拒绝覆盖已有文件，ISP 命令不会迁移客户端文件。
 
 ## 给 agent
 
