@@ -1,5 +1,14 @@
 [English](README.md) | **简体中文**
 
+> **已弃用：本 shell 版本（v1.1.0）不再维护。** 新安装请使用 [`ts-version` 分支](https://github.com/zht7063/my-singbox/tree/ts-version)上的 TypeScript 版本，今后只开发该版本。其安装命令：
+>
+> ```bash
+> curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
+> sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
+> ```
+>
+> 以下内容保留为 v1.1.0 的参考。
+
 # My sing-box
 
 在 Debian/Ubuntu VPS 上用 Docker 构建基于 sing-box 的 shadowsocks 2022 和 vless-reality-vision 节点，并导出给 Mihomo 使用的 `clash.yaml`。
@@ -28,7 +37,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
+git clone --branch shell-version https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh

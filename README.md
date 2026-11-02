@@ -1,5 +1,14 @@
 **English** | [简体中文](README_CN.md)
 
+> **Deprecated: this shell version (v1.1.0) is no longer maintained.** New installs should use the TypeScript version on the [`ts-version` branch](https://github.com/zht7063/my-singbox/tree/ts-version), which is the only version developed from now on. Its install commands:
+>
+> ```bash
+> curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
+> sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
+> ```
+>
+> The instructions below stay as the v1.1.0 reference.
+
 # My sing-box
 
 Build sing-box based Shadowsocks 2022 and VLESS-Reality-Vision nodes with Docker on a Debian/Ubuntu VPS, and export a `clash.yaml` for Mihomo.
@@ -28,7 +37,7 @@ Ports `8388` and `8443` must be free. The ports are defined in `templates/config
 ## Quick start
 
 ```bash
-git clone https://github.com/zht7063/my-singbox.git /opt/sing-box
+git clone --branch shell-version https://github.com/zht7063/my-singbox.git /opt/sing-box
 cd /opt/sing-box
 sudo bash scripts/init.sh
 SING_BOX_VERSION=latest bash scripts/gen-keys.sh
