@@ -141,7 +141,7 @@ it.each(['generation', 'start'])('init: stops after %s failure and keeps secrets
 
 it('init: --help is handled generically without writing files', async () => {
   const dir = project(null);
-  for (const help of ['--help', '-h']) expect(await invoke('init', dir, {}, [help])).toEqual({ code: 0, stdout: 'Usage: my-singbox init [args]\nEquivalent shell script: scripts/init.sh\n', stderr: '' });
+  for (const help of ['--help', '-h']) expect(await invoke('init', dir, {}, [help])).toEqual({ code: 0, stdout: 'Usage: my-singbox init [args]\n', stderr: '' });
   expect(existsSync(join(dir, '.env'))).toBe(false);
 });
 

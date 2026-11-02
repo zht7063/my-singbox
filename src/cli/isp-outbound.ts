@@ -94,7 +94,7 @@ export async function ispOutbound(
   };
   const preflightConfig = (): { text: string; config: SingboxConfig } => {
     if (!isFile(path('config.json')))
-      throw new IspError('config.json does not exist. Run scripts/gen-config.sh first.');
+      throw new IspError('config.json does not exist. Run my-singbox gen-config first.');
     const text = readFileSync(path('config.json'), 'utf8');
     let config: unknown;
     try { config = JSON.parse(text); }
@@ -126,7 +126,7 @@ export async function ispOutbound(
   const add = async (image: string) => {
     const original = preflightConfig();
     if (!isFile(path('.env')))
-      throw new IspError('.env does not exist. Run scripts/gen-keys.sh first.');
+      throw new IspError('.env does not exist. Run my-singbox gen-keys first.');
     if (!configHasIsp(original.config)) await service.portsFree();
     const envText = readFileSync(path('.env'), 'utf8');
     const isp = await collectInputs(envText, ask);
@@ -154,7 +154,7 @@ export async function ispOutbound(
       candidate(clashCandidate);
       clashState = `clash.yaml updated (nodes ${NODE_SS_ISP} and ${NODE_VLESS_ISP} added and listed in the ${GROUP_MAIN} group).`;
     } else {
-      warn('clash.yaml does not exist, so only the server config is changed. After running scripts/conf-clash.sh, re-run this script with --add to add the client nodes.');
+      warn('clash.yaml does not exist, so only the server config is changed. After running my-singbox conf-clash, re-run my-singbox isp-outbound --add to add the client nodes.');
       clashState = 'clash.yaml not found (skipped).';
     }
     const changed = configText !== original.text;
@@ -249,12 +249,12 @@ Notes:
     if (docker === 'permission-denied')
       throw new IspError('permission denied while talking to the Docker daemon (the Docker socket is not accessible to this user). Nothing was changed.\n' +
         'Do one of these, then re-run:\n' +
-        `  - run this script with sudo:  sudo my-singbox isp-outbound ${action ? `--${action}` : ''}\n` +
+        `  - run it with sudo:  sudo my-singbox isp-outbound ${action ? `--${action}` : ''}\n` +
         '  - or add your user to the docker group and log in again:  sudo usermod -aG docker "$USER"   (then log out and back in)');
     if (docker === 'down')
       throw new IspError('Docker daemon is not running (or not reachable). Start it and re-run. Nothing was changed.');
     const image = await service.containerImage();
-    if (!image) throw new IspError('Container sing-box not found. Run scripts/start.sh first.');
+    if (!image) throw new IspError('Container sing-box not found. Run my-singbox start first.');
     const sudoHint = `sudo my-singbox isp-outbound ${action ? `--${action}` : ''}`;
     try { accessSync(projectDir, constants.W_OK); }
     catch {

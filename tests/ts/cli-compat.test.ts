@@ -14,7 +14,7 @@ for (const { name, file, success } of commands) {
   it.each(['--help', '-h'])('AC14 ' + name + ' %s retains usage and exit 0', async (arg) => {
     const dir = project(null);
     const result = await invoke(name, dir, { env: {} }, [arg]);
-    expect(result).toEqual({ code: 0, stdout: `Usage: my-singbox ${name} [args]\nEquivalent shell script: scripts/${name}.sh\n`, stderr: '' });
+    expect(result).toEqual({ code: 0, stdout: `Usage: my-singbox ${name} [args]\n`, stderr: '' });
   });
   it.each([
     { id: 'no args', args: [] },
@@ -51,9 +51,9 @@ for (const { name, file, success } of commands) {
       expect(shell.error).toBeUndefined();
       expect(shell.status).toBe(1);
       expect(ts.code).toBe(shell.status);
-      const error = 'Error: .env does not exist. Run scripts/gen-keys.sh first.';
-      expect(shell.stderr).toContain(error);
-      expect(ts.stderr).toContain(error);
+      // Only wording difference from v1.1.0: npx installs ship no scripts/, so point at the CLI.
+      expect(shell.stderr).toContain('Error: .env does not exist. Run scripts/gen-keys.sh first.');
+      expect(ts.stderr).toContain('Error: .env does not exist. Run my-singbox gen-keys first.');
     });
   }
 }
