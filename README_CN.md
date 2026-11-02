@@ -4,7 +4,7 @@
 
 使用 Docker 中的 sing-box 部署 Shadowsocks 2022 和 VLESS-Reality-Vision 节点，并导出供 Mihomo 客户端使用的 `clash.yaml`。
 
-支持：Debian/Ubuntu VPS，x64 或 arm64。
+支持：仅限 Debian 和 Ubuntu VPS，x64 或 arm64。
 
 ```bash
 curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
@@ -12,6 +12,21 @@ sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
 ```
 
 安装程序无需 sudo，将 Node >= 22 安装到 `~/.local/node`；如果 PATH 中已有 Node >= 22，则跳过安装。
+
+> **npm 包 `my-singbox` 尚未发布，目前 `npx my-singbox ...` 无法使用。** 下文示例写作 `npx my-singbox <cmd>`。包发布之前，请改用下面任一方式（均已验证）：
+>
+> ```bash
+> # A) 从本仓库的检出目录运行
+> git clone --branch ts-version https://github.com/zht7063/my-singbox.git && cd my-singbox
+> npm ci && npm run build
+> node dist/cli.js doctor   # 代替 "npx my-singbox doctor"
+>
+> # B) 安装打包后的 tarball
+> npm pack
+> npm install -g ./my-singbox-*.tgz   # 之后运行 "my-singbox <cmd>"
+> ```
+>
+> 请在部署目录（例如 `/opt/sing-box`）中运行命令。方式 A 请使用绝对路径：`node /path/to/my-singbox/dist/cli.js <cmd>`。
 
 ## 使用
 
@@ -55,7 +70,7 @@ npx my-singbox doctor
 | 命令 | 用途 |
 | --- | --- |
 | `init` | 准备缺失的文件并启动 sing-box。 |
-| `gen-keys` | 生成凭据；需要 `SING_BOX_VERSION`。 |
+| `gen-keys` | 生成 `.env` 凭据；单独运行时需要在环境中设置 `SING_BOX_VERSION`（镜像标签）。 |
 | `gen-config` | 生成服务端配置。 |
 | `conf-clash` | 生成客户端配置。 |
 | `start` | 启动 sing-box 并执行自检。 |
@@ -86,7 +101,7 @@ sudo usermod -aG docker "$USER"
 
 ## 不支持的系统
 
-`install.sh` 和 doctor 要求 Linux、glibc >= 2.28 以及 x64 或 arm64。CentOS 7（glibc < 2.28）、Alpine/musl 和其他 CPU 架构会报错退出。参见 [shell 版本 v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0)。
+仅支持 Debian 和 Ubuntu；其他发行版均不受支持。`install.sh` 和 doctor 在 Alpine/musl、glibc 低于 2.28 以及 x64、arm64 以外的 CPU 架构上也会报错退出。请改用 [shell 版本 v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0)（分支 [`shell-version`](https://github.com/zht7063/my-singbox/tree/shell-version)）。
 
 ## 文件和配置
 

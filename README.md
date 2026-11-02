@@ -4,7 +4,7 @@
 
 Shadowsocks 2022 and VLESS-Reality-Vision nodes with sing-box in Docker; exports `clash.yaml` for Mihomo clients.
 
-Supported: Debian/Ubuntu VPS, x64 or arm64.
+Supported: Debian and Ubuntu VPS only, x64 or arm64.
 
 ```bash
 curl -fsSLo install.sh https://raw.githubusercontent.com/zht7063/my-singbox/ts-version/install.sh
@@ -12,6 +12,21 @@ sh install.sh && export PATH="$HOME/.local/node/bin:$PATH"
 ```
 
 The installer installs Node >= 22 to `~/.local/node` without sudo; it skips installation if Node >= 22 is already on PATH.
+
+> **The npm package `my-singbox` is not published yet, so `npx my-singbox ...` does not work for now.** Examples below use `npx my-singbox <cmd>`. Until the package is published, use one of these routes instead (both tested):
+>
+> ```bash
+> # A) from a checkout of this repository
+> git clone --branch ts-version https://github.com/zht7063/my-singbox.git && cd my-singbox
+> npm ci && npm run build
+> node dist/cli.js doctor   # replaces "npx my-singbox doctor"
+>
+> # B) install a packed tarball
+> npm pack
+> npm install -g ./my-singbox-*.tgz   # then run "my-singbox <cmd>"
+> ```
+>
+> Run commands from the deployment directory (for example `/opt/sing-box`). For route A, call `node /path/to/my-singbox/dist/cli.js <cmd>` with the absolute path.
 
 ## Usage
 
@@ -55,7 +70,7 @@ Read-only checks for Node version, Linux and libc, architecture, Docker Compose,
 | Command | Purpose |
 | --- | --- |
 | `init` | Prepare missing files and start sing-box. |
-| `gen-keys` | Generate credentials; requires `SING_BOX_VERSION`. |
+| `gen-keys` | Generate `.env` credentials; needs `SING_BOX_VERSION` (image tag) set in the environment when run on its own. |
 | `gen-config` | Generate the server config. |
 | `conf-clash` | Generate the client config. |
 | `start` | Start sing-box and run self-checks. |
@@ -86,7 +101,7 @@ Log out and back in, or run `newgrp docker`. Docker group membership is equivale
 
 ## Unsupported systems
 
-`install.sh` and doctor require Linux, glibc >= 2.28, and x64 or arm64. CentOS 7 (glibc < 2.28), Alpine/musl, and other CPU architectures exit with an error. See [shell version v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0).
+Only Debian and Ubuntu are supported; all other distributions are unsupported. `install.sh` and doctor also exit with an error on Alpine/musl, on glibc older than 2.28, and on CPU architectures other than x64 and arm64. Use the [shell version v1.1.0](https://github.com/zht7063/my-singbox/releases/tag/v1.1.0) (branch [`shell-version`](https://github.com/zht7063/my-singbox/tree/shell-version)) instead.
 
 ## Files and config
 
