@@ -1,6 +1,14 @@
 # Changelog
 
-## 3.0.0 (unreleased)
+## 3.0.1
+
+### Fixes
+
+- Rendering a server config template whose `route.rules` is not an array now fails with a clear error: `Invalid config.json template: route.rules must be an array.` (#23)
+- Remove the unused `GROUP_MAIN` export and the obsolete `'clash.yaml'` member of `ManagedFile`. (#24)
+- Docs: state clearly that the default Anthropic/Claude/Datadog domain rule is written to the server's `config.json` and does not change client `clash.yaml` rules. (#25)
+
+## 3.0.0
 
 ### Breaking changes
 
