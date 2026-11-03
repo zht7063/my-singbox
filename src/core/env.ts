@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { parsePorts, type Ports } from './ports.js';
 
 export const ENV_KEYS = [
   'SING_BOX_VERSION',
@@ -20,6 +21,8 @@ export const ENV_KEYS = [
   'REALITY_SHORT_ID',
   'SS_PASSWORD',
   'SERVER_ADDRESS',
+  'SS_PORT',
+  'VLESS_PORT',
   'ISP_SOCKS_ADDR',
   'ISP_SOCKS_USER',
   'ISP_SOCKS_PASS',
@@ -145,8 +148,11 @@ export function renderGeneratedEnv(v: {
   realityShortId: string;
   ssPassword: string;
   serverAddress: string;
+  ports?: Ports;
 }): string {
-  return `SING_BOX_VERSION=${v.singBoxVersion}\n\n# VLESS\nVLESS_UUID=${v.vlessUuid}\n\n# REALITY\nREALITY_PRIVATE_KEY=${v.realityPrivateKey}\nREALITY_PUBLIC_KEY=${v.realityPublicKey}\nREALITY_SHORT_ID=${v.realityShortId}\n\n# Shadowsocks 2022\nSS_PASSWORD=${v.ssPassword}\n\n# Client\nSERVER_ADDRESS=${v.serverAddress}\n`;
+  const ports = v.ports === undefined ? undefined : parsePorts(v.ports);
+  return `SING_BOX_VERSION=${v.singBoxVersion}\n\n# VLESS\nVLESS_UUID=${v.vlessUuid}\n\n# REALITY\nREALITY_PRIVATE_KEY=${v.realityPrivateKey}\nREALITY_PUBLIC_KEY=${v.realityPublicKey}\nREALITY_SHORT_ID=${v.realityShortId}\n\n# Shadowsocks 2022\nSS_PASSWORD=${v.ssPassword}\n\n# Client\nSERVER_ADDRESS=${v.serverAddress}\n` +
+    (ports ? `\n# Listening ports\nSS_PORT=${ports.ss}\nVLESS_PORT=${ports.vless}\n` : '');
 }
 
 export function writeFileAtomic(

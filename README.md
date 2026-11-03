@@ -27,6 +27,20 @@ Or run it without installing: `npx my-singbox <cmd>`. Examples below use `npx my
 
 Requirements: Node >= 22, Docker with the Compose plugin, access to the Docker socket, and optionally `ss` for the UDP check.
 
+### tui
+
+Open the interactive interface from a writable deployment directory:
+
+```bash
+npx my-singbox tui
+```
+
+The TUI provides prerequisite checks, a first-deployment wizard with editable server address and ports, and ISP add/update/remove forms. It previews file and service changes before applying them and reports file recovery separately from service recovery. Existing text commands remain available.
+
+Use Tab / Shift+Tab to move focus, Enter to activate a button or advance to the next field, Esc to return, and Ctrl+C to exit or request a safe stop. Fields support Ctrl+A/E and Ctrl+U/K; Ctrl+R temporarily reveals the focused credential field. Requires interactive stdin/stdout and at least 60 columns by 18 rows. Set `NO_COLOR=1` to disable colors.
+
+Custom ports are available for new deployments; existing ports are read-only in this release. ISP testing requires curl. The TUI does not install software, elevate privileges, or modify firewall rules. Remote Docker contexts are not supported. See the [TUI guide](docs/tui.md) for recovery and development checks (Chinese).
+
 ### init
 
 In a writable deployment directory, such as `/opt/sing-box`, run:
@@ -43,7 +57,7 @@ npx my-singbox init
 npx my-singbox start
 ```
 
-`start` runs Docker Compose and checks that the container stays running, its config passes `sing-box check`, and configured TCP ports accept local connections. It also checks UDP 8388 with `ss` when available and prints container logs on self-check failure.
+`start` runs Docker Compose and checks that the container stays running, its config passes `sing-box check`, and configured TCP ports accept local connections. It also checks UDP on the actual Shadowsocks inbound ports with `ss` when available and prints container logs on self-check failure.
 
 ### isp-outbound
 
@@ -54,7 +68,7 @@ npx my-singbox isp-outbound --remove
 
 Add or update an ISP SOCKS5 outbound (the command asks for its address and credentials), or remove it. Without an action, the command shows a menu; `--yes` or `-y` skips restart confirmation, and `--help` shows options.
 
-Clash keeps its existing rules, rule providers, and DNS settings: it chooses whether traffic goes directly from the client or enters the VPS. The server's `config.json` independently chooses the VPS's outbound. With ISP configured, sing-box sniffs traffic, sends the template's selected domains through `isp-socks`, and sends other traffic through `direct`. Without ISP, the optional ISP rules are omitted and the final outbound remains `direct`. Both modes use the same two base inbounds and client nodes on ports 8388 and 8443; ISP adds no listening ports or client nodes.
+Clash keeps its existing rules, rule providers, and DNS settings: it chooses whether traffic goes directly from the client or enters the VPS. The server's `config.json` independently chooses the VPS's outbound. With ISP configured, sing-box sniffs traffic, sends the template's selected domains through `isp-socks`, and sends other traffic through `direct`. Without ISP, the optional ISP rules are omitted and the final outbound remains `direct`. Both modes use the same two base inbounds and client nodes on the configured ports (defaults 8388 and 8443); ISP adds no listening ports or client nodes.
 
 The default ISP domain rule comes from `templates/config.json.template` and is written to the server's `config.json` when ISP is configured. It matches `anthropic.com`, `claude.ai`, `claude.com`, `claudeusercontent.com`, `http-intake.logs.us5.datadoghq.com`, and `browser-intake-us5-datadoghq.com` using `domain_suffix`. These are server egress rules; they do not add or change rules in `clash.yaml` and apply only to traffic the client sends to the VPS.
 
@@ -70,6 +84,7 @@ Read-only checks for Node version, Linux and libc, architecture, Docker Compose,
 
 | Command | Purpose |
 | --- | --- |
+| `tui` | Open the deployment wizard, prerequisite checks and ISP forms. |
 | `init` | Prepare missing files and start sing-box. |
 | `gen-keys` | Generate `.env` credentials; needs `SING_BOX_VERSION` (image tag) set in the environment when run on its own. |
 | `gen-config` | Generate the server config. |
@@ -89,7 +104,9 @@ npx my-singbox start
 
 ## Firewall and ports
 
-Open 8388/tcp, 8388/udp, and 8443/tcp in the local firewall and cloud security group. ISP outbound uses these same listening ports. The tool never changes firewall rules.
+The default ports to open in the local firewall and cloud security group are 8388/tcp, 8388/udp, and 8443/tcp. When choosing custom ports in the TUI, follow the actual ports shown on the result page. ISP outbound uses the same listeners. The tool never changes firewall rules.
+
+For text workflows, add optional `SS_PORT=18388` and `VLESS_PORT=18443` entries to `.env` before generating configs. Missing keys use defaults; empty, invalid or duplicate ports are rejected. Editing `.env` does not update existing server/client configs, and the generators continue to refuse overwriting them.
 
 ## Install Docker
 

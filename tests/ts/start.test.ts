@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { createServer, type AddressInfo } from 'node:net';
 import { parseListenPorts, realStartDeps, redact, secretValues, startNode, type StartDeps } from '../../src/index.js';
 import { envQuote } from '../../src/core/env.js';
+import { firewallPorts } from '../../src/core/start.js';
 import { invoke, project, shellEnv } from './helpers/cli.js';
 import { creds, fixtureText, isp } from './helpers/fixtures.js';
 
@@ -32,8 +33,8 @@ function fakeStart(): StartDeps {
     sleep: vi.fn(async () => {}),
   };
 }
-function config(dir: string, port = 8443) {
-  writeFileSync(join(dir, 'config.json'), `{"inbounds":[{"listen_port":${port}}]}`);
+function config(dir: string, port = 8443, type = 'vless') {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ inbounds: [{ type, listen_port: port }] }));
 }
 function privateOutput(result: { stdout: string; stderr: string }) {
   for (const secret of secrets) expect(result.stdout + result.stderr).not.toContain(secret);
@@ -127,7 +128,7 @@ it.each([
   ['up fails', 'docker compose up failed.'],
 ])('start: %s, with redacted child output', async (failure, message) => {
   const dir = project(fixtureText(true)), deps = fakeStart(), run = deps.run;
-  config(dir, failure.startsWith('UDP') ? 8388 : 8443);
+  config(dir, failure.startsWith('UDP') ? 8388 : 8443, failure.startsWith('UDP') ? 'shadowsocks' : 'vless');
   let inspections = 0;
   deps.run = vi.fn(async (file, args) => {
     const result = await run(file, args);
@@ -171,7 +172,7 @@ it.each([
 
 it.each(['missing', 'hidden owner', 'sing-box owner'])('start: UDP %s succeeds', async (owner) => {
   const dir = project(fixtureText(true)), deps = fakeStart(), run = deps.run;
-  config(dir, 8388);
+  config(dir, 8388, 'shadowsocks');
   deps.run = vi.fn(async (file, args) => file !== 'ss' ? run(file, args) : {
     code: owner === 'missing' ? 127 : 0,
     stdout: udpLine.trimEnd() + (owner === 'sing-box owner' ? ' users:(("sing-box",pid=42))\n' : '\n'),
@@ -183,6 +184,64 @@ it.each(['missing', 'hidden owner', 'sing-box owner'])('start: UDP %s succeeds',
   expect(result.stderr.includes('Warning: ss is not installed. Skipping UDP listener check for port 8388.\n')).toBe(owner === 'missing');
   expect(vi.mocked(deps.run).mock.calls.filter(([file]) => file === 'ss')).toHaveLength(owner === 'missing' ? 1 : 2);
   privateOutput(result);
+});
+
+it.each(['hidden owner', 'sing-box owner', 'wrong owner', 'not listening', 'missing ss'])('start: checks actual custom SS UDP port: %s', async (scenario) => {
+  const dir = project(fixtureText(true)), deps = fakeStart(), run = deps.run;
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ inbounds: [
+    { type: 'shadowsocks', listen_port: 18388 },
+    { type: 'vless', listen_port: 8388 },
+  ] }));
+  deps.run = vi.fn(async (file, args) => {
+    if (file !== 'ss') return run(file, args);
+    const line = 'UNCONN 0 0 [::]:18388 [::]:*';
+    return {
+      code: scenario === 'missing ss' ? 127 : 0,
+      stdout: scenario === 'not listening'
+        ? udpLine + 'UNCONN 0 0 [::]:118388 [::]:*\n'
+        : line + (args[0] === '-ulnp' && scenario.endsWith('owner') && scenario !== 'hidden owner'
+          ? ` users:(("${scenario === 'wrong owner' ? 'other' : 'sing-box'}",pid=42))\n` : '\n') + udpLine,
+      stderr: childOutput,
+    };
+  });
+  const result = await invoke('start', dir, { start: deps });
+  expect(vi.mocked(deps.tcpOpen).mock.calls).toEqual([[18388], [8388]]);
+  if (scenario === 'wrong owner' || scenario === 'not listening') {
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(`UDP port 18388 is ${scenario === 'wrong owner' ? 'not owned by sing-box' : 'not listening'}.`);
+    expect(result.stdout).not.toContain('Self-check passed.');
+  } else {
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Self-check passed. Ports: 18388 8388\n');
+    expect(result.stderr.includes('Skipping UDP listener check for port 18388.')).toBe(scenario === 'missing ss');
+  }
+  privateOutput(result);
+});
+
+it('start: VLESS on the default SS port requires only TCP', async () => {
+  const dir = project(), deps = fakeStart();
+  config(dir, 8388, 'vless');
+  expect((await invoke('start', dir, { start: deps })).code).toBe(0);
+  expect(vi.mocked(deps.run).mock.calls.filter(([file]) => file === 'ss')).toEqual([]);
+});
+
+it('start: checks every distinct Shadowsocks UDP listener', async () => {
+  const dir = project(), deps = fakeStart(), run = deps.run;
+  const inbounds = [
+    { type: 'shadowsocks', listen_port: 18388 },
+    { type: 'shadowsocks', listen_port: 9000 },
+    { type: 'shadowsocks', listen_port: 18388 },
+    { type: 'vless', listen_port: 18443 },
+  ];
+  const text = JSON.stringify({ inbounds });
+  writeFileSync(join(dir, 'config.json'), text);
+  deps.run = vi.fn(async (file, args) => file !== 'ss' ? run(file, args) : {
+    code: 0, stdout: 'UNCONN 0 0 0.0.0.0:18388 0.0.0.0:*\nUNCONN 0 0 0.0.0.0:9000 0.0.0.0:*\n', stderr: '',
+  });
+  expect((await invoke('start', dir, { start: deps })).code).toBe(0);
+  expect(vi.mocked(deps.tcpOpen).mock.calls).toEqual([[18388], [9000], [18443]]);
+  expect(vi.mocked(deps.run).mock.calls.filter(([file]) => file === 'ss')).toHaveLength(4);
+  expect(firewallPorts(text)).toEqual(['18388/tcp', '18388/udp', '9000/tcp', '9000/udp', '18388/tcp', '18388/udp', '18443/tcp']);
 });
 
 it('start: extra/unknown args are ignored on success and help is handled generically', async () => {
@@ -209,7 +268,7 @@ it('start: redacts unexpected inspect status in errors', async () => {
 
 it('start: retries container, TCP and UDP checks with one-second sleeps', async () => {
   const dir = project(), deps = fakeStart(), run = deps.run;
-  config(dir, 8388);
+  config(dir, 8388, 'shadowsocks');
   let inspections = 0, udpChecks = 0;
   deps.run = vi.fn(async (file, args) => {
     const result = await run(file, args);

@@ -1,4 +1,5 @@
 import { type Env, type EnvKey, envUnquote } from './core/env.js';
+import { parsePorts, PortError } from './core/ports.js';
 import {
   UUID_RE,
   PRIVATE_KEY_RE,
@@ -137,11 +138,21 @@ export function buildModel(
     inbound: { tag, port },
     creds: protocol === 'shadowsocks' ? ss : reality,
   });
+  let ports;
+  try {
+    ports = parsePorts({
+      ss: env.keys.has('SS_PORT') ? v.SS_PORT ?? '' : SS_PORT,
+      vless: env.keys.has('VLESS_PORT') ? v.VLESS_PORT ?? '' : VLESS_PORT,
+    });
+  } catch (error) {
+    if (error instanceof PortError) throw new ModelError(error.message);
+    throw error;
+  }
   const model: Model = {
     server,
     nodes: [
-      node(NODE_SS, 'shadowsocks', SS_TAG, SS_PORT),
-      node(NODE_VLESS, 'vless-reality', VLESS_TAG, VLESS_PORT),
+      node(NODE_SS, 'shadowsocks', SS_TAG, ports.ss),
+      node(NODE_VLESS, 'vless-reality', VLESS_TAG, ports.vless),
     ],
   };
   if (target === 'client') return model;

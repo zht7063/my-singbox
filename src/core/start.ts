@@ -16,6 +16,22 @@ export function parseListenPorts(configText: string): number[] {
   return [...ports];
 }
 
+function shadowsocksPorts(configText: string): number[] {
+  // Keep parseListenPorts' raw-text compatibility for old/custom configs.
+  let config: { inbounds?: { type?: string; listen_port?: number }[] } | null;
+  try {
+    config = JSON.parse(configText);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(config?.inbounds)) return [];
+  return [...new Set(config.inbounds.flatMap((inbound) => {
+    const port = inbound?.listen_port;
+    return inbound?.type === 'shadowsocks' && typeof port === 'number' &&
+      Number.isInteger(port) && port >= 1 && port <= 65535 ? [port] : [];
+  }))];
+}
+
 export function secretValues(envText: string): string[] {
   return [...envText.matchAll(/^(?:REALITY_PRIVATE_KEY|SS_PASSWORD|VLESS_UUID|ISP_SOCKS_USER|ISP_SOCKS_PASS)=([^\r\n]*)\r?$/gm)]
     .map((m) => envUnquote(m[1]))
@@ -81,7 +97,9 @@ export async function startNode(opts: {
     throw new Error('compose.yaml does not exist.');
   if (!existsSync(join(project, 'config.json')))
     throw new Error('config.json does not exist. Run my-singbox gen-config first.');
-  const ports = parseListenPorts(readFileSync(join(project, 'config.json'), 'utf8'));
+  const configText = readFileSync(join(project, 'config.json'), 'utf8');
+  const ports = parseListenPorts(configText);
+  const udpPorts = shadowsocksPorts(configText);
   if (!(await opts.dockerAvailable())) throw new Error('docker is not installed.');
   if ((await deps.run('docker', ['compose', 'version'])).code)
     throw new Error('docker compose is not available.');
@@ -126,26 +144,27 @@ export async function startNode(opts: {
     }
     if (!open) await fail(`Port ${port} is not accepting connections.`);
   }
-  if (ports.includes(8388)) {
+  for (const port of udpPorts) {
+    const listener = new RegExp(`:${port}\\s`);
     let listening = false;
     for (let i = 0; i < 10; i++) {
       const udp = await deps.run('ss', ['-uln']);
       if (udp.code === 127) {
-        opts.stderr('Warning: ss is not installed. Skipping UDP listener check for port 8388.\n');
+        opts.stderr(`Warning: ss is not installed. Skipping UDP listener check for port ${port}.\n`);
         listening = true;
         break;
       }
-      if (udp.code === 0 && /:8388\s/.test(udp.stdout)) {
+      if (udp.code === 0 && listener.test(udp.stdout)) {
         const owners = await deps.run('ss', ['-ulnp']);
-        const lines = owners.stdout.split('\n').filter((l) => /:8388\s/.test(l)).join('\n');
+        const lines = owners.stdout.split('\n').filter((l) => listener.test(l)).join('\n');
         if (lines.includes('users:') && !lines.includes('sing-box'))
-          await fail('UDP port 8388 is not owned by sing-box.');
+          await fail(`UDP port ${port} is not owned by sing-box.`);
         listening = true;
         break;
       }
       await deps.sleep(1000);
     }
-    if (!listening) await fail('UDP port 8388 is not listening.');
+    if (!listening) await fail(`UDP port ${port} is not listening.`);
   }
   state = await status();
   if (state !== 'running') await fail(`sing-box did not stay running (status: ${state}).`);

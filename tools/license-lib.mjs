@@ -20,6 +20,7 @@ const ALLOWED = new Set([
 // Re-review these exceptions when versions or the shipped artifact change.
 export const EXCEPTIONS = {
   'lightningcss@1.33.0': 'MPL-2.0; dev-only Vite CSS tooling, excluded from shipped artifact.',
+  'lightningcss-darwin-arm64@1.33.0': 'MPL-2.0; dev-only platform binding, excluded from shipped artifact.',
   'lightningcss-linux-x64-gnu@1.33.0':
     'MPL-2.0; dev-only platform binding, excluded from shipped artifact.',
 };

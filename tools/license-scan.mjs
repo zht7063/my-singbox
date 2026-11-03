@@ -56,8 +56,8 @@ function scan(directory) {
 scan('node_modules');
 const failures = rows.filter((x) => !['PASS', 'EXCEPTION'].includes(x.verdict)).length;
 const header =
-  'MIT repository: shipped artifact bundles 0 third-party packages; ' +
-  'package.json has 0 dependencies.';
+  'MIT repository: bundled third-party licenses are recorded in THIRD-PARTY-NOTICES.md; ' +
+  'package.json has 0 external runtime dependencies.';
 console.log(header);
 console.table(rows);
 console.log(`${rows.length} packages scanned; ${failures} failures.`);

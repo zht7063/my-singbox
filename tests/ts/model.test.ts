@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { buildModel, ModelError } from '../../src/model.js';
+import { buildModel, ModelError, SS_PORT, VLESS_PORT } from '../../src/model.js';
 import { parseEnv } from '../../src/core/env.js';
 import {
   fixtureEnv,
@@ -85,6 +85,34 @@ it.each([
   const env = fixtureEnv(true);
   env.values[key as keyof typeof env.values] = value;
   expect(() => buildModel(env)).toThrow(new ModelError(`Invalid ${key}.`));
+});
+
+it.each(['all', 'server', 'client'] as const)('uses validated custom ports for target %s', (target) => {
+  const model = buildModel(parseEnv(fixtureText() + 'SS_PORT=18388\nVLESS_PORT=18443\n'), { target });
+  expect(model.nodes.map((node) => node.inbound.port)).toEqual([18388, 18443]);
+  expect([SS_PORT, VLESS_PORT]).toEqual([8388, 8443]);
+});
+
+it.each([
+  ['SS_PORT=1\n', [1, 8443]],
+  ['VLESS_PORT=65535\n', [8388, 65535]],
+  ['SS_PORT=008388\n', [8388, 8443]],
+])('defaults each omitted port independently: %s', (text, expected) => {
+  expect(buildModel(parseEnv(fixtureText() + text)).nodes.map((node) => node.inbound.port)).toEqual(expected);
+});
+
+it.each(['SS_PORT', 'VLESS_PORT'] as const)('rejects empty and invalid %s for every target', (key) => {
+  for (const value of ['', ' ', '0', '-1', '65536', '1.5', '1e3', '0x2000', '+8388', '8388 ', ' 8388', '"8388"', 'NaN', 'Infinity', '8388\rbroken']) {
+    for (const target of ['all', 'server', 'client'] as const) {
+      const env = parseEnv(fixtureText() + `${key}=${value}\n`);
+      expect(() => buildModel(env, { target })).toThrow(new ModelError(`Invalid ${key}. Expected an integer from 1 to 65535.`));
+    }
+  }
+});
+
+it.each(['SS_PORT=8443\n', 'VLESS_PORT=8388\n', 'SS_PORT=18000\nVLESS_PORT=018000\n'])('rejects duplicate TCP ports: %s', (text) => {
+  for (const target of ['all', 'server', 'client'] as const)
+    expect(() => buildModel(parseEnv(fixtureText() + text), { target })).toThrow(new ModelError('SS_PORT and VLESS_PORT must be different.'));
 });
 
 it('rejects partial ISP blocks', () => {

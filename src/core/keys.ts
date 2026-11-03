@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { IMAGE_PULL_TIMEOUT_MS, runCommand } from './isp-service.js';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { get } from 'node:https';
 import {
@@ -49,16 +49,14 @@ export async function generateKeys(deps: KeyDeps) {
 }
 
 export type DockerRun = (file: string, args: string[]) => Promise<string>;
-const execute: DockerRun = (file, args) =>
-  new Promise((resolve, reject) =>
-    execFile(
-      file,
-      args,
-      { timeout: 120000, maxBuffer: 1024 * 1024 },
-      (err, out) =>
-        err ? reject(new Error('Docker command failed.')) : resolve(out),
-    ),
-  );
+const execute: DockerRun = async (file, args) => {
+  const result = await runCommand(file, args, {
+    cwd: process.cwd(),
+    timeout: args[0] === 'run' ? IMAGE_PULL_TIMEOUT_MS : 120_000,
+  }).catch(() => null);
+  if (!result || result.code) throw new Error('Docker command failed.');
+  return result.stdout;
+};
 
 export function defaultKeyDeps(image: string): KeyDeps {
   return {
@@ -84,13 +82,13 @@ export function dockerDaemonUp(run: DockerRun = execute): Promise<boolean> {
 }
 
 export interface PublicIpDeps {
-  httpGet(url: string, family: 4 | 6): Promise<string>;
+  httpGet(url: string, family: 4 | 6, signal?: AbortSignal): Promise<string>;
 }
-const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
+const httpGet: PublicIpDeps['httpGet'] = (url, family, signal) =>
   new Promise((resolve, reject) => {
     const req = get(
       url,
-      { family, headers: { 'User-Agent': 'my-singbox' } },
+      { family, headers: { 'User-Agent': 'my-singbox' }, signal },
       (res) => {
         if (res.statusCode! < 200 || res.statusCode! >= 300) {
           res.resume();
@@ -116,6 +114,7 @@ const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
 
 export async function detectPublicIp(
   deps: PublicIpDeps = { httpGet },
+  signal?: AbortSignal,
 ): Promise<string | null> {
   for (const family of [4, 6] as const) {
     const urls =
@@ -130,7 +129,8 @@ export async function detectPublicIp(
         : ['https://api6.ipify.org', 'https://ipv6.icanhazip.com'];
     for (const url of [...urls, 'https://1.1.1.1/cdn-cgi/trace']) {
       try {
-        const body = await deps.httpGet(url, family);
+        signal?.throwIfAborted();
+        const body = await deps.httpGet(url, family, signal);
         const ip = (
           url.endsWith('/trace')
             ? (body
@@ -140,7 +140,7 @@ export async function detectPublicIp(
             : body
         ).trim();
         if (isPublicIp(ip)) return ip;
-      } catch {}
+      } catch { signal?.throwIfAborted(); }
     }
   }
   return null;

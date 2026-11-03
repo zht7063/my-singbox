@@ -18,7 +18,9 @@ beforeAll(() => {
   if (enabled) execFileSync('npm', ['run', 'build'], { stdio: 'pipe' });
 }, 30000);
 
-it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated configs with ISP %s', (isp) => {
+it.skipIf(!enabled).each(['off', 'on', 'incremental'].flatMap((isp) =>
+  [false, true].map((customPorts) => ({ isp, customPorts })),
+))('validates generated configs with ISP $isp and custom ports $customPorts', ({ isp, customPorts }) => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-validation-'));
   try {
     const keys = execFileSync(singbox!, ['generate', 'reality-keypair'], { encoding: 'utf8' });
@@ -32,6 +34,7 @@ it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated conf
       realityShortId: '0123456789abcdef',
       ssPassword: 'AAAAAAAAAAAAAAAAAAAAAA==',
       serverAddress: '8.8.8.8',
+      ...(customPorts ? { ports: { ss: 18388, vless: 18443 } } : {}),
     });
     if (isp === 'on') env += 'ISP_SOCKS_ADDR=198.51.100.7:1080\nISP_SOCKS_USER="fixture-user"\nISP_SOCKS_PASS="fixture-pass"\nISP_SOCKS_EGRESS_IP=198.51.100.7\n';
     writeFileSync(join(dir, '.env'), env, { mode: 0o600 });
@@ -56,7 +59,9 @@ it.skipIf(!enabled).each(['off', 'on', 'incremental'])('validates generated conf
     const names = clash.proxies.map((proxy: { name: string }) => proxy.name);
     const group = clash['proxy-groups'].find((item: { name: string }) => item.name === 'Proxy').proxies;
     expect(tags).toEqual(['ss-in', 'vless-reality-in']);
-    expect(config.inbounds.map((item: { listen_port: number }) => item.listen_port)).toEqual([8388, 8443]);
+    const expectedPorts = customPorts ? [18388, 18443] : [8388, 8443];
+    expect(config.inbounds.map((item: { listen_port: number }) => item.listen_port)).toEqual(expectedPorts);
+    expect(clash.proxies.map((proxy: { port: number }) => proxy.port)).toEqual(expectedPorts);
     expect(outbounds.includes('isp-socks')).toBe(hasIsp);
     expect(rules).toEqual(hasIsp ? loadSingboxTemplate().route!.rules!.filter((rule) => (rule as { outbound?: string }).outbound === 'isp-socks') : []);
     expect(config.route.rules[0]).toEqual({ action: 'sniff' });

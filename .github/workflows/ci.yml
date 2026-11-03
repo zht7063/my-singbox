@@ -87,6 +87,12 @@ jobs:
           node tools/check-bundle.mjs
       - name: Package file list has no .env and no tests (AC9)
         run: node tools/check-pack.mjs
+      - name: Install terminal smoke-test driver
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Check bundled CLI signals and TUI interaction
+        env:
+          TUI_PTY_TEST: '1'
+        run: npx vitest run tests/ts/cli-signal-compat.test.ts tests/ts/tui-pty.test.ts
 
   license-scan:
     runs-on: ubuntu-latest

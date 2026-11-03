@@ -14,7 +14,8 @@ import {
 import { envUnquote, envWithIsp, envWithoutIsp } from '../core/env.js';
 import { isIspRule, isLegacyIspRule } from '../core/routing.js';
 import { isIpv4, isIpv6Strict, parseIspAddr, validCred } from '../core/validate.js';
-import { IspService } from '../core/isp-service.js';
+import { IspService, sameIspIp, createIspRedactor, ispConfigSecrets } from '../core/isp-service.js';
+import { secretValues } from '../core/start.js';
 
 class Interrupted extends Error {
   constructor(readonly code: number) { super('Interrupted.'); }
@@ -26,14 +27,19 @@ export async function ispOutbound(
 ): Promise<number> {
   const projectDir = resolve(io.cwd ?? process.cwd());
   const controller = new AbortController();
+  const secrets: string[] = [];
+  try { secrets.push(...secretValues(readFileSync(join(projectDir, '.env'), 'utf8'))); }
+  catch { /* Permission and missing-file diagnostics remain in preflight. */ }
+  const clean = (text: string) => createIspRedactor(secrets)(text);
   const serviceIO = {
     projectDir, env: io.env, sleep: io.sleep,
     stdout: (text: string) => io.stdout(text),
     stderr: (text: string) => io.stderr(text),
+    sanitizeOutput: clean,
   };
   const service = new IspService({ ...serviceIO, signal: controller.signal });
-  const warn = (message: string) => io.stderr(`Warning: ${message}\n`);
-  const info = (message: string) => io.stdout(message + '\n');
+  const warn = (message: string) => io.stderr(clean(`Warning: ${message}\n`));
+  const info = (message: string) => io.stdout(clean(message + '\n'));
   const path = (name: string) => join(projectDir, name);
   const isFile = (file: string) => existsSync(file) && statSync(file).isFile();
   const tempFiles: string[] = [];
@@ -95,6 +101,7 @@ export async function ispOutbound(
     try { config = JSON.parse(text); }
     catch { throw new IspError('config.json is not valid JSON.'); }
     checkIspConfig(config);
+    secrets.push(...ispConfigSecrets(config));
     return { text, config };
   };
   const rollback = async () => {
@@ -159,12 +166,13 @@ export async function ispOutbound(
       throw new IspError('.env does not exist. Run my-singbox gen-keys first.');
     const envText = readFileSync(path('.env'), 'utf8');
     const isp = await collectInputs(envText, ask);
+    secrets.push(isp.user, isp.pass);
     info('Checking the SOCKS5 proxy (TCP) and its egress IP...');
     const got = await service.socksEgressIp(isp);
     if (!got)
       throw new IspError("Could not reach an IP echo service through the SOCKS5 proxy. Check the address, username and password, and that this server's IP is allowed by the ISP. Nothing was changed.");
     const expected = isp.egressIp || isp.host;
-    if (got.toLowerCase() !== expected.toLowerCase())
+    if (!sameIspIp(got, expected))
       throw new IspError(`Egress IP through the proxy is ${got}, expected ${expected}. If the ISP's egress differs from its entry IP, enter the egress IP when asked. Nothing was changed.`);
     info(`Egress IP through the SOCKS5 proxy: ${got} (matches).`);
     const hasIspPolicy = original.config.route?.final === OUT_TAG ||
@@ -242,7 +250,7 @@ export async function ispOutbound(
         if (rollbackArmed) {
           if (error instanceof Interrupted) {
             try { await rollback(); }
-            catch (rollbackError) { io.stderr(`Error: ${(rollbackError as Error).message}\n`); }
+            catch (rollbackError) { io.stderr(clean(`Error: ${(rollbackError as Error).message}\n`)); }
           } else await rollback();
         }
         throw error;
@@ -252,7 +260,11 @@ export async function ispOutbound(
     });
   } catch (error) {
     if (controller.signal.aborted) return (controller.signal.reason as Interrupted).code;
-    throw error;
+    if (error instanceof Error) {
+      error.message = clean(error.message);
+      throw error;
+    }
+    throw new IspError(clean(String(error)));
   } finally {
     for (const { signal, handler } of handlers) process.removeListener(signal, handler);
   }

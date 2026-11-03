@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { IMAGE_PULL_TIMEOUT_MS, runCommand } from '../../src/core/isp-service.js';
 import { it, expect, vi } from 'vitest';
 import {
   generateKeys,
@@ -78,7 +78,7 @@ it('provides crypto defaults and injectable Docker probes', async () => {
 it('uses IPv4 first and trims response', async () => {
   const httpGet = vi.fn(async () => ' 8.8.8.8\n');
   expect(await detectPublicIp({ httpGet })).toBe('8.8.8.8');
-  expect(httpGet.mock.calls).toEqual([['https://ipinfo.io/ip', 4]]);
+  expect(httpGet.mock.calls).toEqual([['https://ipinfo.io/ip', 4, undefined]]);
 });
 
 it('tries trace within each family then IPv6', async () => {
@@ -114,35 +114,31 @@ it('uses trace ip field and rejects reserved or failed results', async () => {
   ).toBeNull();
 });
 
-vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
-it('runs Docker with an args array, a 120s timeout, and generic errors', async () => {
-  vi.mocked(execFile).mockImplementationOnce(((
-    _file: unknown,
-    _args: unknown,
-    _opts: unknown,
-    callback: (error: Error | null, out: string) => void,
-  ) => {
-    callback(null, 'output');
-  }) as typeof execFile);
+vi.mock('../../src/core/isp-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/isp-service.js')>();
+  return { ...actual, runCommand: vi.fn() };
+});
+it('runs Docker with an args array, time to pull the image, and generic errors', async () => {
+  vi.mocked(runCommand).mockResolvedValueOnce({ code: 0, stdout: 'output', stderr: '' });
   const image = 'ghcr.io/sagernet/sing-box:1.12.0';
-  expect(
-    await defaultKeyDeps(image).runSingbox(['generate', 'reality-keypair']),
-  ).toBe('output');
-  expect(execFile).toHaveBeenLastCalledWith(
-    'docker',
-    ['run', '--rm', image, 'generate', 'reality-keypair'],
-    expect.objectContaining({ timeout: 120000 }),
-    expect.any(Function),
+  expect(await defaultKeyDeps(image).runSingbox(['generate', 'reality-keypair'])).toBe('output');
+  expect(runCommand).toHaveBeenLastCalledWith(
+    'docker', ['run', '--rm', image, 'generate', 'reality-keypair'],
+    expect.objectContaining({ timeout: IMAGE_PULL_TIMEOUT_MS }),
   );
-  vi.mocked(execFile).mockImplementationOnce(((
-    _file: unknown,
-    _args: unknown,
-    _opts: unknown,
-    callback: (error: Error | null, out: string) => void,
-  ) => {
-    callback(new Error('SECRET stdout/stderr'), 'SECRET');
-  }) as typeof execFile);
-  await expect(defaultKeyDeps(image).runSingbox([])).rejects.toThrow(
-    /^Docker command failed\.$/,
-  );
+  vi.mocked(runCommand).mockRejectedValueOnce(new Error('SECRET stdout/stderr'));
+  await expect(defaultKeyDeps(image).runSingbox([])).rejects.toThrow(/^Docker command failed\.$/);
+  vi.mocked(runCommand).mockResolvedValueOnce({ code: 1, stdout: 'SECRET', stderr: 'SECRET' });
+  await expect(defaultKeyDeps(image).runSingbox([])).rejects.toThrow(/^Docker command failed\.$/);
+});
+
+it('forwards cancellation to public IP requests and stops retrying after abort', async () => {
+  const controller = new AbortController(), reason = new Error('stop IP detection');
+  const httpGet = vi.fn(async (_url: string, _family: 4 | 6, signal?: AbortSignal) => {
+    expect(signal).toBe(controller.signal);
+    controller.abort(reason);
+    throw reason;
+  });
+  await expect(detectPublicIp({ httpGet }, controller.signal)).rejects.toBe(reason);
+  expect(httpGet).toHaveBeenCalledTimes(1);
 });

@@ -1,4 +1,12 @@
-import type { Model, RealityCreds, SsCreds } from '../model.js';
+import {
+  SS_PORT,
+  SS_TAG,
+  VLESS_PORT,
+  VLESS_TAG,
+  type Model,
+  type RealityCreds,
+  type SsCreds,
+} from '../model.js';
 import { ensureRoute, omitIsp, upsertIspOutbound } from './routing.js';
 import { readTemplate } from './templates.js';
 
@@ -33,16 +41,13 @@ export function renderSingbox(model: Model, template: unknown): SingboxConfig {
   const config = substitute(template) as SingboxConfig;
   const prototypes = new Map<string, Record<string, unknown>>();
   for (const protocol of ['shadowsocks', 'vless-reality'] as const) {
-    const base = model.nodes.find(
-      (n) => n.protocol === protocol,
-    )!;
     const proto = config.inbounds.find(
       (i) => i.type === (protocol === 'shadowsocks' ? 'shadowsocks' : 'vless'),
     );
     if (
       !proto ||
-      proto.tag !== base.inbound.tag ||
-      proto.listen_port !== base.inbound.port
+      proto.tag !== (protocol === 'shadowsocks' ? SS_TAG : VLESS_TAG) ||
+      proto.listen_port !== (protocol === 'shadowsocks' ? SS_PORT : VLESS_PORT)
     )
       throw new Error('Invalid inbound prototype tag or port.');
     prototypes.set(protocol, proto);
