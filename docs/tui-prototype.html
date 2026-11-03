@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TUI 设计方案</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap">
+<style>
+/* 工程设计文档：左侧终端原型，右侧交互注释；窄屏纵向阅读。 */
+:root {
+  --bg: #f4f7fa; --surface: #ffffff; --fg: #1e3042; --muted: #52677a; --accent: #146a8a; --line: #cad6df;
+  --font-display: "Noto Sans SC", "PingFang SC", sans-serif;
+  --font-body: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-code: "IBM Plex Mono", "SFMono-Regular", Consolas, "PingFang SC", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #131d27; --surface: #1a2936; --fg: #e0eaf1; --muted: #acbdca; --accent: #80cce4; --line: #3c5264; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #131d27; --surface: #1a2936; --fg: #e0eaf1; --muted: #acbdca; --accent: #80cce4; --line: #3c5264; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.85; }
+a { color: var(--accent); text-underline-offset: 4px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+.wrap { max-width: 1192px; margin-inline: auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 36px 64px; }
+header { display: grid; gap: 14px; padding-block-end: 26px; border-bottom: 1px solid var(--line); }
+.eyebrow { color: var(--accent); font: 500 12px/1.6 var(--font-code); letter-spacing: .09em; }
+h1, h2, h3, p { margin: 0; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.4; }
+h1 { font-size: clamp(26px, 4vw, 38px); font-weight: 700; }
+h2 { font-size: 23px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+p { max-width: 72ch; }
+.lead { font-size: 16px; color: var(--muted); max-width: 65ch; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted); font-size: 12px; }
+nav { display: flex; flex-wrap: wrap; gap: 8px 24px; padding-block: 19px; border-bottom: 1px solid var(--line); }
+nav a { font-size: 13px; text-decoration: none; }
+section { display: grid; gap: 18px; padding-block: 34px; border-bottom: 1px solid var(--line); scroll-margin-top: 20px; }
+.section-head { display: grid; gap: 7px; }
+.section-head p { color: var(--muted); }
+.scope { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+.scope > div { display: grid; align-content: start; gap: 10px; min-width: 0; }
+ul, ol { margin: 0; padding-inline-start: 22px; }
+li + li { margin-block-start: 6px; }
+.prototype { display: grid; grid-template-columns: minmax(0, 2.6fr) minmax(210px, 1fr); gap: 26px; align-items: start; }
+.prototype > * { min-width: 0; }
+.terminal { background: var(--surface); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.terminal-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 11px 16px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); border-bottom: 1px solid var(--line); font: 500 11px/1.6 var(--font-code); color: var(--muted); }
+.terminal-scroll { overflow-x: auto; }
+pre { margin: 0; padding: 20px; color: var(--fg); font: 400 12px/1.95 var(--font-code); font-variant-numeric: tabular-nums; tab-size: 2; white-space: pre; }
+.terminal pre { min-width: max-content; }
+.focus { background: var(--accent); color: var(--surface); font-weight: 500; }
+.emphasis { color: var(--accent); font-weight: 500; }
+.dim { color: var(--muted); }
+.notes { display: grid; gap: 13px; color: var(--muted); font-size: 13px; padding-block: 5px; }
+.notes h3 { color: var(--fg); font-size: 15px; }
+.note-label { font: 500 11px/1.6 var(--font-code); letter-spacing: .06em; color: var(--accent); }
+.caption { font-size: 12px; color: var(--muted); }
+.callout { padding: 16px 20px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); border: 1px solid var(--line); display: grid; gap: 7px; }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
+th { background: var(--surface); font-weight: 600; }
+th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 100px; }
+code { font-family: var(--font-code); font-size: .92em; overflow-wrap: anywhere; }
+.flow { background: var(--surface); border: 1px solid var(--line); overflow-x: auto; }
+.decision-list { display: grid; gap: 17px; }
+.decision-list > div { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 20px; }
+.decision-list dt { font-weight: 600; }
+.decision-list dd { margin: 0; color: var(--muted); }
+dl { margin: 0; }
+footer { padding-block-start: 22px; display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) { .prototype { grid-template-columns: minmax(0, 1fr); } .notes { grid-template-columns: 1fr 1fr; gap: 20px; } }
+@media (max-width: 560px) { .wrap { padding-block-start: 22px; } .scope, .notes { grid-template-columns: minmax(0,1fr); gap: 18px; } section { padding-block: 26px; } .decision-list > div { grid-template-columns: minmax(0,1fr); gap: 5px; } h2 { font-size: 21px; } pre { padding: 16px; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<main class="wrap" lang="zh-CN">
+<header>
+  <div class="eyebrow">MY SING-BOX / TUI DESIGN</div>
+  <h1>把部署所需的信息，放在同一个终端里。</h1>
+  <p class="lead">通过状态首页、部署向导和 ISP 表单，让端口选择有检查依据，让每次保存与重启都有可核对的结果。</p>
+  <div class="meta"><span>设计提案 · 尚未实现</span><span>基于 TypeScript CLI 3.0.0</span><span>2026-11-03</span></div>
+</header>
+<nav aria-label="文档目录">
+  <a href="#scope">设计范围</a><a href="#home">状态首页</a><a href="#prerequisites">运行条件</a><a href="#ports">端口选择</a><a href="#isp">ISP 表单</a><a href="#review">变更预览</a><a href="#outcome">执行结果</a><a href="#engineering">落地方案</a><a href="#delivery">实施与验收</a>
+</nav>
+<section id="scope">
+  <div class="section-head"><h2>先把三条常用路径做好</h2><p>入口建议为 <code>my-singbox tui</code>。不传子命令仍显示现有帮助；自动化继续使用现有 CLI。</p></div>
+  <div class="scope">
+    <div><h3>首版包含</h3><ul><li>运行条件逐项检测，提供原因和处理建议。</li><li>首次部署确认服务器地址，选择 SS / VLESS 端口。</li><li>ISP 添加、更新、移除和主动测试。</li><li>提交前预览，执行时显示阶段，完成后显示真实状态。</li><li>已有部署查看端口、启动并检查、查看客户端导入说明。</li></ul></div>
+    <div><h3>后续再做</h3><ul><li>已有部署修改端口：需要同时处理服务端和客户端迁移。</li><li>多 ISP、路由编辑器、订阅与二维码。</li><li>依赖自动安装、防火墙修改、卸载与镜像升级不在当前范围。</li></ul><p class="caption">完整工程设计：仓库 <code>docs/tui-design.md</code>。本页为可浏览的原型与设计要点。</p></div>
+  </div>
+  <div class="callout"><strong>所有终端画面均为设计示意</strong><p>检测结果、时间、任务状态和地址是演示数据。本页不连接服务器、不读取本机、不执行 Docker。保留地址仅用于说明；桌面画面可在手机中横向查看。</p></div>
+</section>
+<section id="home">
+  <div class="section-head"><h2>状态首页</h2><p>先展示当前部署事实，再给出最合适的下一步。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>HOME / 新部署</span><span>演示 · 约 80 列</span></div><div class="terminal-scroll"><pre><span class="emphasis">My sing-box</span>                                       /opt/sing-box
+──────────────────────────────────────────────────────────────
+<span class="emphasis">[状态]</span>    运行条件    端口信息    ISP    客户端
+
+  当前部署  <b>未初始化</b>
+  确认运行条件，然后填写服务器地址与端口。
+
+  <span class="focus">  开始部署  </span>     [ 检查运行条件 ]
+
+  本地环境     Linux · arm64 · Node 22
+  Docker       未检查
+  部署文件     未创建
+  ISP 出口     未配置；默认出口 direct
+
+  <span class="dim">ISP 控制 VPS 出口，共用两个基础监听端口。</span>
+
+──────────────────────────────────────────────────────────────
+Tab 切换控件   Enter 打开   ? 帮助   Ctrl+C 退出</pre></div></div>
+    <aside class="notes"><div><div class="note-label">NEXT ACTION</div><h3>推荐动作随状态变化</h3><p>空目录可以开始部署。已有完整配置则查看状态或启动检查。文件缺失先展示缺失项，避免把部分部署误当成空目录。</p></div><div><div class="note-label">READ ONLY</div><h3>打开首页不启动服务</h3><p>读取文件和本地信息；Docker 等外部检查显示“未检查”。运行检查由用户触发，并标明最近检查时间。</p></div></aside>
+  </div>
+</section>
+<section id="prerequisites">
+  <div class="section-head"><h2>运行条件与依赖</h2><p>用户需要知道哪一项阻塞部署，以及修复后如何继续。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>SETUP / 1 OF 5</span><span>演示 · 依赖缺失</span></div><div class="terminal-scroll"><pre><span class="emphasis">首次部署 › 运行条件</span>
+──────────────────────────────────────────────────────────────
+  状态      检查项              检测结果
+  [OK]      Node                22.x，要求 &gt;=22
+  [OK]      系统 / libc         Debian · glibc 2.36
+  [OK]      CPU                 arm64
+  [OK]      Docker CLI          已安装
+<span class="focus">  [FAIL]  &gt; Docker Compose      缺少 v2 插件                 </span>
+  [OK]      Docker daemon       可以访问
+  [WARN]    ss / iproute2        未安装
+  [OK]      部署目录            可写
+
+  <b>Docker Compose</b>
+  需要 docker compose v2 插件，当前环境无法启动部署。
+  请按安装指引处理，再返回重新检查。
+
+  [ 重新检查 ]    [ 查看建议 ]    <span class="dim">[ 继续：不可用 ]</span>
+──────────────────────────────────────────────────────────────
+<span class="dim">缺少 ss 影响部分端口 / UDP 检查，不代表检查已经通过。</span></pre></div></div>
+    <aside class="notes"><div><div class="note-label">STATUS</div><h3>检查结论有明确语义</h3><p>OK / WARN / FAIL 表示结论；检查中、未检查、跳过、未知表示执行状态。未执行项不能算作通过。</p></div><div><div class="note-label">ACTIONABLE</div><h3>建议保留在当前上下文</h3><p>选中一项就能看到处理建议。安装由用户自行执行；TUI 不调用 sudo。启用 ISP 后增加 curl 条件检查。</p></div></aside>
+  </div>
+  <p class="caption">实施前置：现有 doctor 将 Compose v1 视为 WARN，但启动需要 v2，应统一；发行版识别、目录可写与 Docker context 也是新增检查。</p>
+</section>
+<section id="ports">
+  <div class="section-head"><h2>服务器与端口选择</h2><p>把格式、监听占用、外网连通三类信息分开，让每个结论都可解释。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>SETUP / 2 OF 5</span><span>演示 · TCP 端口冲突</span></div><div class="terminal-scroll"><pre><span class="emphasis">首次部署 › 服务器与端口</span>
+──────────────────────────────────────────────────────────────
+  服务器公网 IP / 域名
+  [ 203.0.113.10                            ]
+  <span class="dim">自动检测后可修改；这里是文档演示地址。</span>
+
+  Shadowsocks 2022  [ 8388  ]    TCP + UDP
+  VLESS / REALITY   <span class="focus">[ 8443  ]</span>    TCP
+
+  8388/tcp   [未发现占用]   本机监听表 · 14:32:08
+  8388/udp   [未发现占用]   本机监听表 · 14:32:08
+  8443/tcp   <b>[冲突]</b>         已有监听，详情权限不足
+
+  ! VLESS 端口已被占用，请修改后重新检查。
+  [ 检查端口 ]    [ 为冲突字段建议端口 ]
+
+  <span class="dim">防火墙和云安全组尚未验证，部署后需自行放行。</span>
+──────────────────────────────────────────────────────────────
+[ 上一步 ]                               <span class="dim">[ 下一步：不可用 ]</span></pre></div></div>
+    <aside class="notes"><div><div class="note-label">VALIDATION</div><h3>按协议检查</h3><p>SS 同时检查 TCP 和 UDP，VLESS 检查 TCP。两个基础端口不能相同。修改字段后，旧的占用结果立即失效。</p></div><div><div class="note-label">SUGGESTION</div><h3>建议需要用户接受</h3><p>候选高位端口检查后再展示；不自动替换已确认端口。提交前重查，最终仍以真实启动结果为准。</p></div></aside>
+  </div>
+  <div class="table-scroll"><table><thead><tr><th>提示</th><th>所依据的事实</th><th>下一步</th></tr></thead><tbody><tr><td>格式合法</td><td>十进制整数，1–65535</td><td>检查本机占用</td></tr><tr><td>未发现占用</td><td>本次监听表或独占绑定检查</td><td>提交前重查；启动后验证监听</td></tr><tr><td>未知</td><td>工具缺失、权限或检查异常</td><td>展示原因，预览中明确选择是否继续</td></tr><tr><td>外网未验证</td><td>本地检查无法证明云安全组与公网可达</td><td>自行放行，在客户端验证</td></tr></tbody></table></div>
+</section>
+<section id="isp">
+  <div class="section-head"><h2>ISP 配置表单</h2><p>支持回看、修改和测试；保留现有认证与独立服务端路由语义。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>ISP / UPDATE</span><span>演示 · 已有凭据</span></div><div class="terminal-scroll"><pre><span class="emphasis">ISP 出口 › 更新配置</span>
+──────────────────────────────────────────────────────────────
+  启用 ISP SOCKS5   [ 是 ]
+  代理主机 IP      [ 198.51.100.20                      ]
+  代理端口         [ 1080                               ]
+  用户名           [ 修改用户名… ]   当前值已保存
+  密码             <span class="focus">[ 更换密码…   ]</span>   当前值已保存
+  期望出口 IP      [ 留空使用代理入口 IP                ]
+
+  路由：保留当前服务端规则；默认出口以当前配置为准。
+  不新增端口；本次不修改 clash.yaml。
+
+  [ 测试代理 ]    状态：未测试
+  <span class="dim">测试会连接该代理，并经代理请求 HTTPS 出口查询服务。</span>
+  添加 / 更新需要测试通过；修改字段后需重新测试。
+
+──────────────────────────────────────────────────────────────
+[ 取消 ]                                      [ 预览变更 ]</pre></div></div>
+    <aside class="notes"><div><div class="note-label">CREDENTIALS</div><h3>保留是一个明确动作</h3><p>更新时不把星号填进密码框。选择更换后，新密码为空即报错。用户名和密码均必填，按 UTF-8 字节数验证。</p></div><div><div class="note-label">EGRESS</div><h3>期望出口是校验条件</h3><p>留空默认校验入口 IP；入口与出口不同时填写真实出口。更换代理时提示确认旧期望值，不能把它当作备注。</p></div></aside>
+  </div>
+  <div class="scope"><div><h3>输入边界</h3><p>首版代理地址支持 IPv4 与严格 IPv6，主机和端口分开填写。不宣称支持域名代理、URL 或匿名认证。密码不 trim；引号、美元符号和反斜线由现有 env 序列化器处理。</p></div><div><h3>状态分层</h3><p>TCP 可连接、SOCKS5 认证和 HTTPS 出口检测分别报告。最终提交仍须通过出口校验；它不能证明实际应用域名路由正确。若 .env 与 config.json 凭据不一致，先显示来源差异。</p></div></div>
+  <p class="caption">更新保留现有 ISP 路由条件和顺序。移除遇到 route.final、detour、嵌套规则等残留引用时，列出路径并阻止操作；不擅自把策略改成 direct。</p>
+</section>
+<section id="review">
+  <div class="section-head"><h2>提交前的变更预览</h2><p>预览以实际操作计划生成，按钮明确说明接下来发生什么。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>SETUP / 4 OF 5</span><span>演示 · 新部署，自定义端口</span></div><div class="terminal-scroll"><pre><span class="emphasis">首次部署 › 变更预览</span>
+──────────────────────────────────────────────────────────────
+  服务器      203.0.113.10（演示）
+  监听        SS 18388/tcp+udp · VLESS 18443/tcp
+  ISP         启用 · 198.51.100.20:1080（演示）
+  凭据        将自动生成；ISP 密码已填写
+
+  创建        compose.yaml
+  创建        .env               权限 0600
+  创建        config.json        权限 0600
+  创建        clash.yaml         权限 0600
+
+  服务动作    首次启动 sing-box，并执行本地检查
+  外部请求    必要时拉取固定版本镜像
+
+  <span class="dim">请自行开放 18388/tcp、18388/udp、18443/tcp。</span>
+──────────────────────────────────────────────────────────────
+[ 返回修改 ]                                <span class="focus">  创建并启动  </span></pre></div></div>
+    <aside class="notes"><div><div class="note-label">PLAN</div><h3>不同操作，不同计划</h3><p>首次部署创建四个文件。ISP 维护只涉及 .env 和 config.json，显示备份与服务动作；不把客户端文件列入事务。</p></div><div><div class="note-label">COMMIT</div><h3>确认时重新验证</h3><p>草稿修改使旧计划失效。提交时加锁、重读文件与模板指纹；外部文件变化则要求重新预览。</p></div></aside>
+  </div>
+  <p class="caption">ISP 的 config 变化需要保存并重启；取消不安装。仅 env 变化与无变化沿用现有分支，并准确展示是否检查过服务。首版不引入“保存但不应用”模式。</p>
+</section>
+<section id="outcome">
+  <div class="section-head"><h2>执行结果与失败恢复</h2><p>阶段名称比百分比更可靠；文件恢复与服务恢复是两项独立结论。</p></div>
+  <div class="prototype">
+    <div class="terminal"><div class="terminal-title"><span>RESULT / FIRST DEPLOYMENT</span><span>演示 · 完成，有跳过项</span></div><div class="terminal-scroll"><pre><span class="emphasis">首次部署 › 执行结果</span>
+──────────────────────────────────────────────────────────────
+  [完成]  生成凭据并校验候选配置
+  [完成]  写入配置文件
+  [完成]  启动容器
+  [完成]  sing-box check / 本地 TCP 检查
+  [跳过]  UDP 监听检查：未安装 ss
+
+  <b>服务已启动，本地检查完成，有 1 项检查未执行。</b>
+  外网可达性尚未验证。
+
+  客户端文件  /opt/sing-box/clash.yaml
+  防火墙      18388/tcp、18388/udp、18443/tcp
+
+  [ 查看检查详情 ]    [ 查看导入说明 ]    <span class="focus">  返回首页  </span>
+──────────────────────────────────────────────────────────────
+<span class="dim">跳过项保留在结果中，不显示“全部检查通过”。</span></pre></div></div>
+    <aside class="notes"><div><div class="note-label">PROGRESS</div><h3>等待有上下文</h3><p>生成凭据、配置校验、写文件、启动和监听检测分别显示。等待镜像时显示阶段与耗时，界面保持响应。</p></div><div><div class="note-label">RECOVERY</div><h3>部分完成也是结果</h3><p>新部署启动失败保留配置和已生成密钥，可按当前配置重试。ISP 变更失败则报告文件恢复与旧服务恢复情况。</p></div></aside>
+  </div>
+  <div class="terminal"><div class="terminal-title"><span>RECOVERY / ISP UPDATE</span><span>演示 · 恢复旧服务失败</span></div><div class="terminal-scroll"><pre>  <b>ISP 更新失败</b>  ·  失败阶段：重启后的运行检查
+
+  文件恢复  [完成]  .env、config.json 已恢复
+  服务恢复  [失败]  旧配置重启失败，运行状态未确认
+
+  [ 查看脱敏错误 ]    [ 重新检查服务 ]    [ 返回首页 ]</pre></div></div>
+</section>
+<section id="engineering">
+  <div class="section-head"><h2>落地需要先接通的数据与业务层</h2><p>TUI 与 CLI 共用校验、计划和应用服务。界面消费结构化事件，现有文本输出也由这些事件生成。</p></div>
+  <div class="flow"><pre>  CLI ─┐
+       ├─ 应用服务：读取状态 → 校验草稿 → 计划 → 应用 → 验证
+  TUI ─┘                 │
+                         ├─ 核心：模型 / 渲染 / ISP / env / 脱敏
+                         └─ 适配器：文件 / Docker / 端口 / 代理测试
+
+  页面：加载 → 编辑 → 校验 → 预览 → 应用 → 验证 → 结果
+                                              └─ 失败 → 恢复 → 结果</pre></div>
+  <dl class="decision-list">
+    <div><dt>端口数据贯通</dt><dd>增加可选 SS_PORT / VLESS_PORT 环境键，缺失时仍是 8388 / 8443。服务端模板验证先检查原型再应用用户端口；客户端使用同一模型；UDP 检查改为按实际协议和端口生成。</dd></div>
+    <div><dt>结构化检查</dt><dd>提取 doctor 检查集合；增加发行版、目录、daemon 与 context 检查。缺 ss 是降级状态，缺 Compose v2 是部署阻塞。远程 Docker context 首版不支持部署，避免本地路径挂载误判。</dd></div>
+    <div><dt>ISP 用例抽取</dt><dd>当前事务编排在 CLI 私有闭包中。抽取共享用例，复用 IspService、纯配置变换、备份与安装原语。保留出口校验、候选校验、重启与恢复语义，消除对提示文本的依赖。</dd></div>
+    <div><dt>技术选择</dt><dd>先验证 Ink + React。构建依赖由 esbuild 内联，保持 npm 零外部运行时依赖。先整体打入 CLI；仅 tui 命令挂载界面，普通命令与库导入不得改变终端状态。</dd></div>
+    <div><dt>写入与中断</dt><dd>编辑不落盘；应用时共享写锁并校验基线。单文件原子写不等于多文件事务。持久记录执行阶段，不记录秘密正文；下次启动能识别未完成操作。恢复过程使用独立取消上下文。</dd></div>
+    <div><dt>凭据与输出</dt><dd>新旧秘密统一脱敏，处理跨输出块的泄漏与 ANSI 控制字符。文件 0600，私有目录 0700。正常退出和可处理信号恢复 raw mode、光标与屏幕；SIGKILL 无法保证恢复。</dd></div>
+  </dl>
+  <div class="callout"><strong>两处现有实现需要特别处理</strong><p>普通启动的 UDP 检查写死 8388；自定义 SS 端口必须修正该路径。ISP 重建当前没有限定服务名，自定义 Compose 可能有额外服务；接入 TUI 前应限定 sing-box 或在预览中列明全部影响范围。</p></div>
+</section>
+<section id="delivery">
+  <div class="section-head"><h2>实施顺序与验收</h2><p>先让业务结果可信，再完成界面；已有部署端口迁移独立推进。</p></div>
+  <div class="table-scroll"><table><thead><tr><th>阶段</th><th>交付内容</th><th>完成条件</th></tr></thead><tbody><tr><td>P0 · 基础接口</td><td>结构化检查与事件；Ink 打包和 SSH 技术验证</td><td>零外部运行时依赖；正常 CLI 无副作用；中文、焦点和 resize 正常</td></tr><tr><td>P1 · 端口贯通</td><td>env、模型、服务端与客户端渲染、启动检查</td><td>默认兼容，自定义 SS UDP 检查正确；已有配置不被覆盖</td></tr><tr><td>P2 · 首版 TUI</td><td>首页、完整向导、ISP 测试、预览与结果</td><td>完成真实新部署和 ISP 维护；失败、恢复与中断准确呈现</td></tr><tr><td>P3 · 端口迁移</td><td>已有配置增量更新、备份恢复、客户端重导入</td><td>保留手改内容；服务端与客户端端口一致</td></tr></tbody></table></div>
+  <div class="scope"><div><h3>终端交互验收</h3><ul><li>纯键盘可完成流程；Enter 不从输入框直接提交。</li><li>80 列单列；60–79 列逐字段紧凑模式。</li><li>低于 60 列或 18 行给出 resize 提示；草稿保留。</li><li>非 TTY 或 TERM=dumb 明确退出，指引使用 CLI。</li><li>密码不回显；外部日志与错误一致脱敏。</li></ul></div><div><h3>业务验收</h3><ul><li>TCP 空闲但 UDP 冲突时仍拦住 SS 端口。</li><li>已有文件、过期预览、并发写入不被覆盖。</li><li>ISP 操作使 clash.yaml 字节保持不变。</li><li>文件恢复成功、旧服务恢复失败可同时显示。</li><li>typecheck、现有测试、build、bundle、pack、license 检查通过。</li></ul></div></div>
+</section>
+<footer><p>本文为设计交付，未实现 TUI。工程细节、字段规则、源文件依据及完整验收矩阵见 <code>docs/tui-design.md</code>。</p><p>原型是静态页面，页面导航只用于浏览设计；终端按钮和输入框是示意，不采集凭据。</p></footer>
+</main>
+</body>
+</html>

@@ -2,7 +2,10 @@ import { it, expect } from 'vitest';
 import { parse } from 'yaml';
 import { renderClash } from '../../src/core/render-clash.js';
 import { readTemplate } from '../../src/core/templates.js';
-import { fixtureModel, creds } from './helpers/fixtures.js';
+import { fixtureModel, fixtureText, creds } from './helpers/fixtures.js';
+import { parseEnv } from '../../src/core/env.js';
+import { buildModel } from '../../src/model.js';
+import { loadSingboxTemplate, renderSingbox } from '../../src/core/render-config.js';
 it.each([false, true])(
   'preserves comments and unchanged sections (ISP=%s)',
   (withIsp) => {
@@ -27,6 +30,17 @@ it.each([false, true])(
     );
   },
 );
+it.each([false, true])('keeps custom client ports aligned with server inbounds, ISP=%s', (enabled) => {
+  const model = buildModel(parseEnv(fixtureText(enabled) + 'SS_PORT=18388\nVLESS_PORT=18443\n'));
+  const template = readTemplate('clash.yaml.template');
+  const clash = parse(renderClash(model, template));
+  const server = renderSingbox(model, loadSingboxTemplate());
+  expect(clash.proxies.map((proxy: { port: number }) => proxy.port)).toEqual([18388, 18443]);
+  expect(clash.proxies.map((proxy: { port: number }) => proxy.port)).toEqual(server.inbounds.map((inbound) => inbound.listen_port));
+  expect(clash['proxy-groups'][0].proxies).toEqual(['shadowsocks', 'vless-reality', 'DIRECT']);
+  for (const key of ['rules', 'rule-providers', 'dns']) expect(clash[key]).toEqual(parse(template)[key]);
+});
+
 it('keeps quoted scalar style', () => {
   expect(
     renderClash(fixtureModel(), readTemplate('clash.yaml.template')),

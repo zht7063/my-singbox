@@ -1,4 +1,6 @@
 import { runDoctor } from '../doctor/checks.js';
+import { withLock } from '../core/isp.js';
+import { resolve } from 'node:path';
 import type { System } from '../doctor/system.js';
 import { genKeys } from './gen-keys.js';
 import { genConfig } from './gen-config.js';
@@ -30,6 +32,7 @@ const commands = [
   'start',
   'isp-outbound',
   'doctor',
+  'tui',
 ];
 const usage = `Usage: my-singbox <cmd>
 
@@ -65,6 +68,19 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
     io.stderr(usage);
     return 1;
   }
+  if (cmd === 'tui') {
+    if (args.some((arg) => ['--help', '-h'].includes(arg))) {
+      io.stdout('Usage: my-singbox tui\n\nInteractive deployment, dependency checks, ports and ISP configuration.\nRequires an interactive stdin/stdout TTY and TERM other than dumb.\nUse init, doctor or isp-outbound for text and scripted workflows.\n');
+      return 0;
+    }
+    if (args.length) { io.stderr(`Error: Unknown argument: ${args[0]}\n`); return 2; }
+    if (!process.stdin.isTTY || !process.stdout.isTTY || (io.env ?? process.env).TERM === 'dumb') {
+      io.stderr('TUI requires an interactive terminal (stdin and stdout TTY; TERM must not be dumb).\nUse my-singbox doctor, init or isp-outbound for text mode.\n');
+      return 2;
+    }
+    const { launchTui } = await import('../tui/main.js');
+    return launchTui({ cwd: io.cwd, env: io.env });
+  }
   if (cmd === 'isp-outbound') {
     let action: 'add' | 'remove' | undefined;
     let yes = false;
@@ -97,9 +113,11 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
     }
     return runDoctor(io.system, io.stdout);
   }
-  if (cmd === 'gen-keys') return genKeys(io);
-  if (cmd === 'gen-config') return genConfig(io);
-  if (cmd === 'conf-clash') return confClash(io);
-  if (cmd === 'init') return init(io);
-  return start(io);
+  return withLock(resolve(io.cwd ?? process.cwd()), async () => {
+    if (cmd === 'gen-keys') return genKeys(io);
+    if (cmd === 'gen-config') return genConfig(io);
+    if (cmd === 'conf-clash') return confClash(io);
+    if (cmd === 'init') return init(io);
+    return start(io);
+  });
 }

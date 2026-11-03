@@ -84,13 +84,13 @@ export function dockerDaemonUp(run: DockerRun = execute): Promise<boolean> {
 }
 
 export interface PublicIpDeps {
-  httpGet(url: string, family: 4 | 6): Promise<string>;
+  httpGet(url: string, family: 4 | 6, signal?: AbortSignal): Promise<string>;
 }
-const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
+const httpGet: PublicIpDeps['httpGet'] = (url, family, signal) =>
   new Promise((resolve, reject) => {
     const req = get(
       url,
-      { family, headers: { 'User-Agent': 'my-singbox' } },
+      { family, headers: { 'User-Agent': 'my-singbox' }, signal },
       (res) => {
         if (res.statusCode! < 200 || res.statusCode! >= 300) {
           res.resume();
@@ -116,6 +116,7 @@ const httpGet: PublicIpDeps['httpGet'] = (url, family) =>
 
 export async function detectPublicIp(
   deps: PublicIpDeps = { httpGet },
+  signal?: AbortSignal,
 ): Promise<string | null> {
   for (const family of [4, 6] as const) {
     const urls =
@@ -130,7 +131,8 @@ export async function detectPublicIp(
         : ['https://api6.ipify.org', 'https://ipv6.icanhazip.com'];
     for (const url of [...urls, 'https://1.1.1.1/cdn-cgi/trace']) {
       try {
-        const body = await deps.httpGet(url, family);
+        signal?.throwIfAborted();
+        const body = await (signal ? deps.httpGet(url, family, signal) : deps.httpGet(url, family));
         const ip = (
           url.endsWith('/trace')
             ? (body
@@ -140,7 +142,7 @@ export async function detectPublicIp(
             : body
         ).trim();
         if (isPublicIp(ip)) return ip;
-      } catch {}
+      } catch { signal?.throwIfAborted(); }
     }
   }
   return null;

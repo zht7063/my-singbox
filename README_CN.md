@@ -27,6 +27,20 @@ npm i -g my-singbox   # 之后运行 "my-singbox <cmd>"
 
 要求：Node >= 22、Docker 及 Compose 插件、Docker socket 访问权限；UDP 检查可选用 `ss`。
 
+### tui
+
+在可写的部署目录中打开交互界面：
+
+```bash
+npx my-singbox tui
+```
+
+TUI 提供运行条件检查、首次部署向导、服务器地址和端口选择，以及 ISP 添加、更新和移除。保存前展示文件和服务变更；执行后分别展示配置、容器检查和失败恢复状态。现有文本命令继续可用。
+
+使用 Tab / Shift+Tab 移动焦点，Enter 激活按钮或跳到下一个字段，Esc 返回，Ctrl+C 退出或请求安全停止。输入框支持 Ctrl+A/E 移至开头/结尾、Ctrl+U/K 删除光标前/后的内容；凭据默认隐藏，Ctrl+R 临时显示当前字段。需要交互式 stdin/stdout，至少 60 列 × 18 行；可用 `NO_COLOR=1` 禁用颜色。
+
+首版允许新部署选择端口，已有部署的端口只读。ISP 校验需要 curl；TUI 不安装软件、不提权、不修改防火墙。当前不支持远程 Docker context。恢复说明和开发验证方法见 [TUI 使用指南](docs/tui.md)。
+
 ### init
 
 在可写的部署目录中（例如 `/opt/sing-box`）运行：
@@ -43,7 +57,7 @@ npx my-singbox init
 npx my-singbox start
 ```
 
-`start` 运行 Docker Compose，检查容器是否持续运行、配置是否通过 `sing-box check`，以及配置的 TCP 端口是否接受本地连接。如果有 `ss`，还会检查 UDP 8388；自检失败时会输出容器日志。
+`start` 运行 Docker Compose，检查容器是否持续运行、配置是否通过 `sing-box check`，以及配置的 TCP 端口是否接受本地连接。如果有 `ss`，还会检查实际 Shadowsocks 入站端口的 UDP 监听；自检失败时会输出容器日志。
 
 ### isp-outbound
 
@@ -54,7 +68,7 @@ npx my-singbox isp-outbound --remove
 
 添加或更新 ISP SOCKS5 出站（会询问代理地址和凭据），或移除它。不指定操作时显示菜单；`--yes` 或 `-y` 跳过重启确认，`--help` 显示选项。
 
-Clash 保留现有规则、规则集和 DNS 设置，决定流量由客户端直连还是进入 VPS。服务端 `config.json` 独立决定 VPS 的出口：配置 ISP 时，sing-box 先嗅探流量，将模板中指定的域名交给 `isp-socks`，其余流量默认走 `direct`；未配置 ISP 时省略可选 ISP 规则，默认出口仍为 `direct`。两种模式都只使用 8388 和 8443 上的两个基础入站及对应客户端节点，ISP 不新增监听端口或客户端节点。
+Clash 保留现有规则、规则集和 DNS 设置，决定流量由客户端直连还是进入 VPS。服务端 `config.json` 独立决定 VPS 的出口：配置 ISP 时，sing-box 先嗅探流量，将模板中指定的域名交给 `isp-socks`，其余流量默认走 `direct`；未配置 ISP 时省略可选 ISP 规则，默认出口仍为 `direct`。两种模式都只使用两个基础入站及对应客户端节点（默认端口 8388 和 8443），ISP 不新增监听端口或客户端节点。
 
 默认 ISP 域名规则来自 `templates/config.json.template`，配置 ISP 后写入服务端 `config.json`，通过 `domain_suffix` 匹配 `anthropic.com`、`claude.ai`、`claude.com`、`claudeusercontent.com`、`http-intake.logs.us5.datadoghq.com` 和 `browser-intake-us5-datadoghq.com`。这些规则控制服务端出口，不会新增或修改 `clash.yaml` 中的规则，仅对客户端已发送到 VPS 的流量生效。
 
@@ -70,6 +84,7 @@ npx my-singbox doctor
 
 | 命令 | 用途 |
 | --- | --- |
+| `tui` | 打开部署向导、运行条件与 ISP 配置界面。 |
 | `init` | 准备缺失的文件并启动 sing-box。 |
 | `gen-keys` | 生成 `.env` 凭据；单独运行时需要在环境中设置 `SING_BOX_VERSION`（镜像标签）。 |
 | `gen-config` | 生成服务端配置。 |
@@ -89,7 +104,9 @@ npx my-singbox start
 
 ## 防火墙和端口
 
-在本机防火墙和云安全组中开放 8388/tcp、8388/udp 和 8443/tcp。ISP 出站使用相同的监听端口。工具不会修改防火墙规则。
+默认在本机防火墙和云安全组中开放 8388/tcp、8388/udp 和 8443/tcp。如果在 TUI 中选择自定义端口，请按结果页提示放行实际端口。ISP 出站使用相同的监听端口。工具不会修改防火墙规则。
+
+文本流程可在生成配置前向 `.env` 添加可选的 `SS_PORT=18388` 和 `VLESS_PORT=18443`。缺失时使用默认值；空值、非法值或重复端口会报错。修改 `.env` 不会自动更新已有的服务端或客户端文件，生成器仍拒绝覆盖。
 
 ## 安装 Docker
 

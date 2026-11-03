@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from 'esbuild';
+import { terminalBuildOptions } from '../../tools/terminal-build-options.mjs';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { composeImageTag } from '../../src/index.js';
 import { project, root, shellEnv } from './helpers/cli.js';
@@ -18,6 +19,7 @@ beforeAll(async () => {
     target: 'node22',
     format: 'esm',
     bundle: true,
+    ...terminalBuildOptions,
     banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   });
 });
