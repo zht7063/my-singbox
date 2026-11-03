@@ -5,11 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyDeployment, planDeployment, readDeployment, startDeployment } from '../../src/app/deployment.js';
 import { IMAGE_PULL_TIMEOUT_MS } from '../../src/core/isp-service.js';
+import { diagnose } from '../../src/app/diagnostics.js';
 import type { CommandRunner } from '../../src/app/system.js';
 import { creds } from './helpers/fixtures.js';
 import { parse as parseYaml } from 'yaml';
 
-vi.mock('../../src/app/diagnostics.js', () => ({ diagnose: vi.fn(async () => []) }));
+vi.mock('../../src/app/diagnostics.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/app/diagnostics.js')>(),
+  diagnose: vi.fn(async () => []),
+}));
 const directories: string[] = [];
 const servers: Server[] = [];
 afterEach(async () => {
@@ -74,6 +78,27 @@ describe('initial deployment use case', () => {
     ]) {
       expect(() => planDeployment(projectDir, { serverAddress: 'node.example.test', ports })).toThrow();
     }
+    expect(readdirSync(projectDir)).toEqual([]);
+  });
+  it('shows Docker permission remedies when deployment preflight fails before file creation', async () => {
+    const actual = await vi.importActual<typeof import('../../src/app/diagnostics.js')>('../../src/app/diagnostics.js');
+    vi.mocked(diagnose).mockImplementationOnce((options) => actual.diagnose({
+      ...options, osRelease: 'ID=debian',
+      system: { nodeVersion: '22.0.0', platform: 'linux', arch: 'x64', glibcVersionRuntime: '2.36',
+        exec: async () => '', socketAccessible: () => false, username: () => 'tester' },
+      run: async (_file, args) => args[0] === 'info'
+        ? { code: 1, stdout: '', stderr: 'permission denied' }
+        : { code: 0, stdout: args[0] === 'context' ? 'unix:///var/run/docker.sock' : 'available', stderr: '' },
+    }));
+    const projectDir = directory();
+    const run = vi.fn(commands({ ss: 18388, vless: 18443 }));
+    const plan = planDeployment(projectDir, { serverAddress: 'node.example.test', ports: { ss: 18388, vless: 18443 } });
+    const result = await applyDeployment({ projectDir, run }, plan);
+    expect(result).toMatchObject({ ok: false, created: [] });
+    expect(result.message).toContain('Docker daemon 权限不足');
+    expect(result.message).toContain('sudo');
+    expect(result.message).toContain('docker 组');
+    expect(run).not.toHaveBeenCalled();
     expect(readdirSync(projectDir)).toEqual([]);
   });
   it('rejects stale plans before running external commands', async () => {

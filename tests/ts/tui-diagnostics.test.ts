@@ -22,6 +22,24 @@ describe('TUI diagnostics', () => {
     const checks = await diagnose({ ...options, env: { DOCKER_HOST: 'ssh://example.test' }, run: runner({ 'docker compose version': { code: 1, stdout: '', stderr: '' } }) });
     expect(checks.filter((check) => check.blocks).map((check) => check.id)).toEqual(['context', 'compose']);
   });
+  it.each(['permission denied while connecting to the Docker socket', 'Access denied'])('explains Docker permissions and recovery for %s', async (stderr) => {
+    const checks = await diagnose({ ...options, run: runner({
+      'docker info --format {{.ServerVersion}}': { code: 1, stdout: '', stderr },
+    }) });
+    const daemon = checks.find((check) => check.id === 'daemon');
+    expect(daemon).toMatchObject({ status: 'FAIL', blocks: true, summary: 'Docker daemon 权限不足' });
+    expect(daemon?.remediation).toContain('sudo');
+    expect(daemon?.remediation).toContain('docker 组');
+    expect(daemon?.remediation).toContain('重新登录');
+  });
+  it('keeps unreachable-daemon errors distinct from permission failures', async () => {
+    const checks = await diagnose({ ...options, run: runner({
+      'docker info --format {{.ServerVersion}}': { code: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' },
+    }) });
+    expect(checks.find((check) => check.id === 'daemon')).toMatchObject({
+      status: 'FAIL', summary: 'Docker daemon', detail: '无法访问 Docker daemon。',
+    });
+  });
   it('skips dependent Docker probes without treating them as successful', async () => {
     const run = vi.fn(runner({ 'docker --version': { code: 127, stdout: '', stderr: '' } }));
     const checks = await diagnose({ ...options, run });

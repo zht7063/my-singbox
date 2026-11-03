@@ -24,6 +24,12 @@ export interface DiagnosticOptions {
   onCheck?(check: Diagnostic): void;
 }
 
+export function describeBlockers(checks: Diagnostic[]): string {
+  return checks.filter((check) => check.blocks).map((check) =>
+    [check.summary, check.detail, check.remediation].filter(Boolean).join(' '),
+  ).join('\n');
+}
+
 export async function diagnose(options: DiagnosticOptions): Promise<Diagnostic[]> {
   const s = options.system ?? realSystem();
   const checks: Diagnostic[] = [];
@@ -63,7 +69,11 @@ export async function diagnose(options: DiagnosticOptions): Promise<Diagnostic[]
     const compose = await probe('docker', ['compose', 'version']);
     add('compose', compose.code === 0 ? 'OK' : 'FAIL', 'Docker Compose v2', compose.code === 0 ? compose.stdout.trim() : '缺少 docker compose v2 插件。', '安装 Compose v2 插件；旧 docker-compose v1 不能用于此流程。');
     const daemon = await probe('docker', ['info', '--format', '{{.ServerVersion}}']);
-    add('daemon', daemon.code === 0 ? 'OK' : 'FAIL', 'Docker daemon', daemon.code === 0 ? `可访问，版本 ${daemon.stdout.trim()}` : '无法访问 Docker daemon。', '检查 daemon 是否启动、当前 context 和用户权限；修改用户组后重新登录。');
+    const denied = daemon.code !== 0 && /permission denied|access denied|EACCES|EPERM/i.test(daemon.stdout + daemon.stderr);
+    add('daemon', daemon.code === 0 ? 'OK' : 'FAIL', denied ? 'Docker daemon 权限不足' : 'Docker daemon',
+      daemon.code === 0 ? `可访问，版本 ${daemon.stdout.trim()}` : denied ? '当前用户无权访问 Docker daemon。' : '无法访问 Docker daemon。',
+      denied ? '可使用 sudo 重新运行 my-singbox tui，或由管理员将当前用户加入 docker 组后重新登录。'
+        : '检查 daemon 是否启动、当前 context 和用户权限；修改用户组后重新登录。');
   } else {
     for (const [id, summary] of [['context', 'Docker 目标'], ['compose', 'Docker Compose v2'], ['daemon', 'Docker daemon']])
       add(id, 'SKIP', summary, 'Docker CLI 不可用，未执行。', undefined, true);

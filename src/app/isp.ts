@@ -13,7 +13,7 @@ import {
 } from '../core/isp.js';
 import { envUnquote, envWithIsp, envWithoutIsp } from '../core/env.js';
 import { IspService, sameIspIp, createIspRedactor as sanitizer, deploymentSecrets as diskSecrets, type CommandRunner } from '../core/isp-service.js';
-import { diagnose } from './diagnostics.js';
+import { diagnose, describeBlockers } from './diagnostics.js';
 import { loadSingboxTemplate, type SingboxConfig } from '../core/render-config.js';
 import { isIspRule, isLegacyIspRule } from '../core/routing.js';
 import { findTemplate } from '../core/templates.js';
@@ -458,8 +458,8 @@ export async function applyIspPlan(io: IspIO, plan: IspPlan, signal = io.signal)
         persist(true);
         const image = await stage('preflight', async () => {
           const checks = await diagnose({ projectDir: dir, env: io.env, signal, run: io.run, isp: !!context.isp });
-          const blockers = checks.filter((check) => check.blocks);
-          if (blockers.length) throw new IspError(`ISP apply requirements are not met: ${blockers.map((check) => check.summary).join(', ')}. Check deployment diagnostics.`);
+          const blockers = describeBlockers(checks);
+          if (blockers) throw new IspError(`ISP apply requirements are not met:\n${blockers}`);
           accessSync(dir, constants.W_OK);
           for (const name of MANAGED_FILES) {
             const file = join(dir, name);

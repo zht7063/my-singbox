@@ -13,7 +13,7 @@ import { renderClash } from '../core/render-clash.js';
 import { withLock } from '../core/isp.js';
 import { deploymentSecrets, IMAGE_PULL_TIMEOUT_MS, pause, tcpOpen } from '../core/isp-service.js';
 export { deploymentSecrets } from '../core/isp-service.js';
-import { diagnose } from './diagnostics.js';
+import { diagnose, describeBlockers } from './diagnostics.js';
 import { deploymentListeners, probePorts } from '../adapters/port-probe.js';
 import { runCommand, safeText, type ApplicationIO, type OperationEvent } from './system.js';
 import { readIspState, testIsp } from './isp.js';
@@ -144,7 +144,8 @@ export async function applyDeployment(io: ApplicationIO, plan: DeploymentPlan): 
         if (deploymentRevision(io.projectDir) !== plan.baseRevision) throw new Error('文件或模板已发生变化，请重新预览。');
         event('running', '重新检查运行条件与端口');
         const checks = await diagnose({ ...io, isp: !!draft.isp });
-        if (checks.some((check) => check.blocks)) throw new Error('运行条件不满足，请返回运行条件页面处理。');
+        const blockers = describeBlockers(checks);
+        if (blockers) throw new Error(`运行条件不满足：\n${blockers}`);
         const ports = await probePorts(deploymentListeners(draft.ports), io);
         if (ports.some((port) => port.state === 'occupied')) throw new Error('监听端口已被占用，请返回修改端口。');
         if (!plan.allowUnknownPorts && ports.some((port) => port.state === 'unknown')) throw new Error('部分端口检查未知，需在预览中明确确认后继续。');
@@ -220,7 +221,8 @@ export async function startDeployment(io: ApplicationIO, baseRevision?: string):
     await withLock(io.projectDir, async () => {
       if (baseRevision && deploymentRevision(io.projectDir) !== baseRevision) throw new Error('文件或模板已变化，请重新预览启动操作。');
       const checks = await diagnose(io);
-      if (checks.some((check) => check.blocks)) throw new Error('运行条件不满足，请先查看诊断。');
+      const blockers = describeBlockers(checks);
+      if (blockers) throw new Error(`运行条件不满足：\n${blockers}`);
       const exec = (file: string, args: string[]) => command(io, file, args);
       if (baseRevision && deploymentRevision(io.projectDir) !== baseRevision) throw new Error('检查期间文件已变化，请重新预览启动操作。');
       io.onEvent?.({ stage: 'start', status: 'running', message: '启动并检查当前配置' });

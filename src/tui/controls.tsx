@@ -13,6 +13,23 @@ export interface Control {
   activate(): void | Promise<void>;
 }
 
+/** Each page builds controls in display order; fields advance through that same list. */
+export function createControls(setFocus: (next: (value: number) => number) => void) {
+  const controls: Control[] = [];
+  const action = (id: string, label: string, activate: Control['activate']) => {
+    controls.push({ id, label, activate });
+  };
+  const field = (id: string, label: string, value: string, change: (value: string) => void, secret = false, placeholder = '') => {
+    controls.push({
+      id, label, kind: 'field', value, change, secret, placeholder,
+      activate: () => setFocus((old) => Math.min(old + 1, controls.length - 1)),
+    });
+  };
+  return { controls, action, field };
+}
+
+export type ControlBuilder = ReturnType<typeof createControls>;
+
 export function ControlList({ controls, focus, available, columns, busy, reveal, color }: {
   controls: Control[];
   focus: number;

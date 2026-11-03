@@ -57,7 +57,7 @@ it.skipIf(!enabled)('drives deployment, masked ISP add/remove, compact resize an
   }
   const preload = join(directory, 'platform.mjs');
   writeFileSync(preload, `import fs from 'node:fs';\nimport {syncBuiltinESMExports} from 'node:module';\nObject.defineProperty(process, 'platform', {value:'linux'});\nprocess.report.getReport=()=>({header:{glibcVersionRuntime:'2.36'}});\nconst original=fs.readFileSync; fs.readFileSync=(path,...args)=>path==='/etc/os-release'?'ID=debian\\n':original(path,...args);\nsyncBuiltinESMExports();\n`);
-  const stub = `#!${process.execPath}\nconst a=process.argv.slice(2),s=a.join(' ');\nconst fs=require('node:fs');\nif(a[0]==='compose'&&a.includes('up')&&fs.existsSync('.hold-restart')) {\n fs.unlinkSync('.hold-restart');fs.writeFileSync('.restart-started',String(process.pid));setInterval(()=>{},1000);\n} else if(s.includes('context inspect')) console.log('unix:///var/run/docker.sock');\nelse if(s.includes('generate reality-keypair')) console.log('PrivateKey: ${creds.realityPrivateKey}\\nPublicKey: ${creds.realityPublicKey}');\nelse if(s.includes('generate rand')) console.log('${creds.ssPassword}');\nelse if(s.includes('.Config.Image')) console.log('ghcr.io/sagernet/sing-box:v1.14.4');\nelse if(a[0]==='inspect') console.log('running');\nelse if(a[0]==='-V'||a[0]==='--version'||s==='compose version') console.log('available');\nelse if(a[0]==='-uln'||a[0]==='-ulnp'||(a[0]==='-H'&&(a[1]==='-ltn'||a[1]==='-lun'))) {\n if(require('node:fs').existsSync('config.json')) {\n  const p=require('node:fs').readFileSync('config.json','utf8');\n  for(const port of [...p.matchAll(/"listen_port"\\s*:\\s*(\\d+)/g)].map(m=>m[1])) console.log('LISTEN 0 0 *:'+port+' *:* users:(("sing-box",pid=1))');\n }\n}\n`;
+  const stub = `#!${process.execPath}\nconst a=process.argv.slice(2),s=a.join(' ');\nconst fs=require('node:fs');\nif(a[0]==='info'&&fs.existsSync('.deny-docker')) {console.error('permission denied while connecting to the Docker socket');process.exit(1);}\nif(a[0]==='compose'&&a.includes('up')&&fs.existsSync('.hold-restart')) {\n fs.unlinkSync('.hold-restart');fs.writeFileSync('.restart-started',String(process.pid));setInterval(()=>{},1000);\n} else if(s.includes('context inspect')) console.log('unix:///var/run/docker.sock');\nelse if(s.includes('generate reality-keypair')) console.log('PrivateKey: ${creds.realityPrivateKey}\\nPublicKey: ${creds.realityPublicKey}');\nelse if(s.includes('generate rand')) console.log('${creds.ssPassword}');\nelse if(s.includes('.Config.Image')) console.log('ghcr.io/sagernet/sing-box:v1.14.4');\nelse if(a[0]==='inspect') console.log('running');\nelse if(a[0]==='-V'||a[0]==='--version'||s==='compose version') console.log('available');\nelse if(a[0]==='-uln'||a[0]==='-ulnp'||(a[0]==='-H'&&(a[1]==='-ltn'||a[1]==='-lun'))) {\n if(require('node:fs').existsSync('config.json')) {\n  const p=require('node:fs').readFileSync('config.json','utf8');\n  for(const port of [...p.matchAll(/"listen_port"\\s*:\\s*(\\d+)/g)].map(m=>m[1])) console.log('LISTEN 0 0 *:'+port+' *:* users:(("sing-box",pid=1))');\n }\n}\n`;
   writeFileSync(join(bin, 'docker'), stub, { mode: 0o755 }); writeFileSync(join(bin, 'ss'), stub, { mode: 0o755 });
   writeFileSync(join(bin, 'curl'), `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>console.log('198.51.100.20'));\n`, { mode: 0o755 });
   const cli = resolve('dist/cli.js'); expect(existsSync(cli)).toBe(true);
@@ -138,3 +138,22 @@ it.skipIf(!enabled)('restores ISP files and service before exiting on external S
   expect(record.recovery).toMatchObject({ files: 'restored', service: 'restored' });
   expect(existsSync(join(project, '.isp.lock'))).toBe(false);
 }, 20000);
+
+it.skipIf(!enabled)('shows Docker permission remedies when starting from the status page', async () => {
+  const project = join(directory!, 'project');
+  const beforeEnv = readFileSync(join(project, '.env'), 'utf8');
+  const beforeConfig = readFileSync(join(project, 'config.json'), 'utf8');
+  const denied = join(project, '.deny-docker');
+  writeFileSync(denied, '');
+  try {
+    launch(project, join(directory!, 'bin'), join(directory!, 'platform.mjs'));
+    await waitFor('状态首页');
+    await settleKeys('Enter'); await waitFor('变更预览');
+    await settleKeys('Enter'); await waitFor('Docker daemon 权限不足');
+    expect(await waitFor('sudo')).toContain('docker 组');
+    expect(readFileSync(join(project, '.env'), 'utf8')).toBe(beforeEnv);
+    expect(readFileSync(join(project, 'config.json'), 'utf8')).toBe(beforeConfig);
+    expect(existsSync(join(project, '.isp.lock'))).toBe(false);
+    await settleKeys('C-c'); await expectExit(130);
+  } finally { rmSync(denied, { force: true }); }
+}, 10000);

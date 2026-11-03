@@ -12,7 +12,10 @@ import type { System } from '../../src/doctor/system.js';
 import { envQuote } from '../../src/core/env.js';
 import { setupIsp, username, password, type IspHarness } from './helpers/isp.js';
 
-vi.mock('../../src/app/diagnostics.js', () => ({ diagnose: vi.fn(async () => []) }));
+vi.mock('../../src/app/diagnostics.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/app/diagnostics.js')>(),
+  diagnose: vi.fn(async () => []),
+}));
 vi.mock('../../src/core/isp.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/isp.js')>();
   return { ...actual, installFile: vi.fn(actual.installFile) };
@@ -129,19 +132,28 @@ it.each([
   { name: 'unsupported distro', platform: 'linux', release: 'ID=fedora', endpoint: 'unix:///var/run/docker.sock', action: 'add' },
   { name: 'remote Docker context', platform: 'linux', release: 'ID=debian', endpoint: 'ssh://remote.example', action: 'add' },
   { name: 'remote Docker host on removal', platform: 'linux', release: 'ID=ubuntu', endpoint: 'unix:///var/run/docker.sock', host: 'tcp://remote.example:2375', action: 'remove' },
+  { name: 'Docker permission denied', platform: 'linux', release: 'ID=debian', endpoint: 'unix:///var/run/docker.sock', daemonError: 'permission denied while connecting to the Docker socket', action: 'add' },
+  { name: 'Docker access denied on removal', platform: 'linux', release: 'ID=ubuntu', endpoint: 'unix:///var/run/docker.sock', daemonError: 'access denied', action: 'remove' },
 ] as const)('rejects $name at ISP apply before proxy tests, backups or service mutation', async (testCase) => {
   if ('host' in testCase) io.env = { ...h.env, DOCKER_HOST: testCase.host };
   const actual = await vi.importActual<typeof import('../../src/app/diagnostics.js')>('../../src/app/diagnostics.js');
   const system: System = { nodeVersion: '22.0.0', platform: testCase.platform, arch: 'x64', glibcVersionRuntime: '2.36',
     exec: async () => '', socketAccessible: () => true, username: () => 'tester' };
   vi.mocked(diagnose).mockImplementationOnce((options) => actual.diagnose({ ...options, system, osRelease: testCase.release,
-    run: async (_file, args) => ({ code: 0, stdout: args[0] === 'context' ? testCase.endpoint : 'available', stderr: '' }),
+    run: async (_file, args) => args[0] === 'info' && 'daemonError' in testCase && testCase.daemonError !== undefined
+      ? { code: 1, stdout: '', stderr: testCase.daemonError }
+      : { code: 0, stdout: args[0] === 'context' ? testCase.endpoint : 'available', stderr: '' },
   }));
   const before = h.snapshot();
   const plan = testCase.action === 'add' ? addPlan() : removePlan();
   const result = await applyIspPlan(io, plan);
   expect(result).toMatchObject({ ok: false, failedStage: 'preflight', files: 'unchanged', service: 'not-checked' });
   expect(result.error).toContain('requirements are not met');
+  if ('daemonError' in testCase) {
+    expect(result.error).toContain('Docker daemon 权限不足');
+    expect(result.error).toContain('sudo');
+    expect(result.error).toContain('docker 组');
+  }
   expect(diagnose).toHaveBeenCalledWith(expect.objectContaining({ projectDir: h.dir, env: io.env, isp: testCase.action === 'add' }));
   expect(h.snapshot()).toBe(before);
   expect(h.log()).toBe('');
