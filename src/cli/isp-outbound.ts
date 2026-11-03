@@ -33,8 +33,8 @@ export async function ispOutbound(
   const clean = (text: string) => createIspRedactor(secrets)(text);
   const serviceIO = {
     projectDir, env: io.env, sleep: io.sleep,
-    stdout: (text: string) => io.stdout(clean(text)),
-    stderr: (text: string) => io.stderr(clean(text)),
+    stdout: (text: string) => io.stdout(text),
+    stderr: (text: string) => io.stderr(text),
     sanitizeOutput: clean,
   };
   const service = new IspService({ ...serviceIO, signal: controller.signal });
@@ -260,7 +260,11 @@ export async function ispOutbound(
     });
   } catch (error) {
     if (controller.signal.aborted) return (controller.signal.reason as Interrupted).code;
-    throw new IspError(clean((error as Error).message));
+    if (error instanceof Error) {
+      error.message = clean(error.message);
+      throw error;
+    }
+    throw new IspError(clean(String(error)));
   } finally {
     for (const { signal, handler } of handlers) process.removeListener(signal, handler);
   }

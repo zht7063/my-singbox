@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, render, useInput, useStdout } from 'ink';
-import { LineInput, wrapLine } from './input.js';
+import { wrapLine } from './input.js';
+import { ControlList, type Control } from './controls.js';
 import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { randomInt } from 'node:crypto';
@@ -15,7 +16,6 @@ import type { IspSocks } from '../model.js';
 
 type Screen = 'home' | 'checks' | 'network' | 'isp' | 'review' | 'progress' | 'result' | 'info' | 'discard' | 'help';
 type Flow = 'setup' | 'isp-add' | 'isp-remove' | 'start';
-interface Control { id: string; label: string; kind?: 'field'; value?: string; secret?: boolean; placeholder?: string; change?(value: string): void; activate(): void | Promise<void> }
 interface TuiOptions { cwd?: string; env?: NodeJS.ProcessEnv }
 const stageLabels: Record<string, string> = { preflight: '运行条件', baseline: '文件基线', 'proxy-test': '代理出口', 'isp-test': '代理出口', keys: '生成凭据', validate: '候选校验', candidate: '候选校验', files: '创建文件', backup: '备份', install: '保存', restart: '重建服务', verify: '检查服务', 'restore-files': '恢复文件', 'restore-service': '恢复服务', complete: '完成', start: '启动检查' };
 
@@ -28,6 +28,7 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
   const focusRef = useRef(0);
   const setFocus = (next: number | ((value: number) => number)) => {
     focusRef.current = typeof next === 'function' ? next(focusRef.current) : next;
+    setReveal(false);
     setFocusState(focusRef.current);
   };
   const [busy, setBusy] = useState(false);
@@ -61,19 +62,24 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
   const lastCode = useRef(0);
   const callback = useRef<() => void>(() => {});
   const color = env.NO_COLOR === undefined ? 'cyan' : undefined;
-  const currentSecrets = () => {
-    const values = [isp.user, isp.pass, ispState?.draft?.user ?? '', ispState?.draft?.pass ?? ''];
-    values.push(...deploymentSecrets(projectDir));
-    return values.filter(Boolean);
-  };
-  const clean = (text: string) => safeText(text, currentSecrets());
+  const diskSecrets = useMemo(() => deploymentSecrets(projectDir), [projectDir, state, ispState]);
+  const secrets = useMemo(() => [
+    ...diskSecrets, isp.user, isp.pass, ispState?.draft?.user ?? '', ispState?.draft?.pass ?? '',
+  ].filter(Boolean), [diskSecrets, isp.user, isp.pass, ispState]);
+  const clean = (text: string) => safeText(text, secrets);
   const go = (next: Screen) => { setScreen(next); setFocus(0); setError(''); setReveal(false); setInfoOffset(0); };
   const resetDraft = () => {
     setIsp({ host: '', port: '1080', user: '', pass: '', egress: '' }); setIspState(undefined);
     setKeepUser(false); setKeepPass(false); setIspPlan(undefined); setDeploymentPlan(undefined); setTested(undefined);
     setNetwork({ address: '', ss: '8388', vless: '8443' }); setProbes([]); setSuggestion(undefined); setIspEnabled(false); setAllowUnknown(false); setDirty(false);
   };
-  const leave = (next: () => void) => { if (dirty) { previousScreen.current = screen; callback.current = next; go('discard'); } else next(); };
+  const leave = (next: () => void) => {
+    if (dirty) {
+      if (screen !== 'discard') previousScreen.current = screen;
+      callback.current = next;
+      go('discard');
+    } else next();
+  };
   const home = () => { resetDraft(); setState(readDeployment(projectDir)); go('home'); };
   const onEvent = (event: OperationEvent) => setEvents((old) => [...old.filter((item) => item.stage !== event.stage), { ...event, message: clean(event.message) }]);
   const onLog = (text: string) => setLogs((old) => [...old, ...clean(text).split('\n').filter(Boolean)].slice(-30));
@@ -133,11 +139,12 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
 
   useEffect(() => { const resize = () => setSize({ columns: stdout.columns ?? 80, rows: stdout.rows ?? 24 }); stdout.on('resize', resize); return () => { stdout.off('resize', resize); }; }, [stdout]);
   useEffect(() => { if (!busy) return; const timer = setInterval(() => setElapsed((value) => value + 1), 1000); return () => clearInterval(timer); }, [busy]);
-  useEffect(() => { setReveal(false); }, [focus, screen]);
   useEffect(() => { if (!reveal) return; const timer = setTimeout(() => setReveal(false), 10000); return () => clearTimeout(timer); }, [reveal]);
   useEffect(() => {
     const abort = () => { pendingExit.current = typeof signal.reason === 'number' ? signal.reason : 130; if (controller.current) controller.current.abort(new Error('操作已中断，正在安全停止或恢复。')); else finish(pendingExit.current); };
-    signal.addEventListener('abort', abort, { once: true }); return () => signal.removeEventListener('abort', abort);
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    return () => signal.removeEventListener('abort', abort);
   }, [signal, finish]);
 
   const infoLines = info.lines.filter(Boolean).flatMap((line) => wrapLine(clean(line), Math.max(10, size.columns - 2)));
@@ -167,7 +174,7 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
     action('suggest', '生成高位端口建议（接受后才修改字段）', () => task(async () => { for (let attempt = 0; attempt < 8; attempt++) { const ss = randomInt(20000, 60000), vless = randomInt(20000, 60000); if (ss === vless) continue; const results = await probePorts(deploymentListeners({ ss, vless }), io()); if (results.every((value) => value.state === 'free')) { setSuggestion({ ports: { ss, vless }, probes: results }); return; } } throw new Error('未能找到可确认的候选端口，请手动选择。'); }));
     if (suggestion) action('accept-suggestion', `接受建议：SS ${suggestion.ports.ss} / VLESS ${suggestion.ports.vless}`, () => { setNetwork((old) => ({ ...old, ss: String(suggestion.ports.ss), vless: String(suggestion.ports.vless) })); setProbes(suggestion.probes); setSuggestion(undefined); setAllowUnknown(false); setDirty(true); });
     if (probes.some((value) => value.state === 'unknown')) action('unknown', `${allowUnknown ? '[x]' : '[ ]'} 接受未知端口结果，仍由启动结果决定`, () => setAllowUnknown((value) => !value));
-    action('next', '下一步：可选 ISP', () => { parsePorts({ ss: network.ss, vless: network.vless }); if (!network.address.trim()) throw new Error('请输入服务器公网 IP 或域名。'); if (!probes.length || probes.some((value) => value.state === 'occupied')) throw new Error('请检查端口并处理冲突。'); go('isp'); });
+    action('next', '下一步：可选 ISP', () => { if (!network.address.trim()) throw new Error('请输入服务器公网 IP 或域名。'); if (!probes.length || probes.some((value) => value.state === 'occupied')) throw new Error('请检查端口并处理冲突。'); go('isp'); });
     action('defaults', '恢复默认端口 8388 / 8443', () => { changeNetwork('ss', '8388'); changeNetwork('vless', '8443'); });
     action('back', '返回运行条件', () => go('checks'));
   } else if (screen === 'isp') {
@@ -213,7 +220,8 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
       else leave(() => finish(130));
       return;
     }
-    if (size.columns < 60 || size.rows < 18) return;
+    // Draft confirmation must remain usable while the terminal is undersized.
+    if ((size.columns < 60 || size.rows < 18) && screen !== 'discard') return;
     if (busy) return;
     if (key.ctrl && input === 'r' && controls[focusRef.current]?.secret) { setReveal((value) => !value); return; }
     if (key.escape) { if (screen === 'help' || screen === 'discard') go(previousScreen.current); else if (screen !== 'home') leave(home); return; }
@@ -227,14 +235,23 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
 
   const small = size.columns < 60 || size.rows < 18;
   const available = Math.max(2, size.rows - (screen === 'home' ? 12 : screen === 'isp' || screen === 'network' ? 12 : 9));
-  const start = Math.max(0, Math.min(focus - Math.floor(available / 2), controls.length - available));
-  const visible = controls.slice(start, start + available);
   const title = { home: '状态首页', checks: flow === 'setup' ? '首次部署 · 1/5 运行条件' : '运行条件与诊断', network: '首次部署 · 2/5 地址与端口', isp: flow === 'setup' ? '首次部署 · 3/5 可选 ISP' : 'ISP 出口配置', review: flow === 'setup' ? '首次部署 · 4/5 变更预览' : '变更预览', progress: '执行中', result: '执行结果', info: info.title, discard: '草稿尚未保存', help: '键盘帮助' }[screen];
   return <Box flexDirection="column" width={Math.max(20, size.columns - 1)}>
     <Text bold color={color}>My sing-box · {title}</Text>
     <Text dimColor wrap="truncate-middle">{projectDir}</Text>
-    {small ? <><Text>请将终端调整到至少 60 列 × 18 行；草稿已保留。</Text><Text>当前 {size.columns} × {size.rows} · Ctrl+C 退出 / 请求安全停止</Text></> : <>
-      {screen === 'home' && <><Text>部署：{{ empty: '尚未初始化', ready: '配置已存在；服务运行状态未检查', incomplete: '文件不完整', inconsistent: '配置需要核对' }[state.kind]}</Text><Text>ISP：{state.isp ? '已配置；应用路由未验证' : '未配置'}</Text>{state.operation && state.operation.state !== 'complete' && <Text>! 上次操作 {state.operation.state} / {state.operation.stage}；请先核对文件与服务。</Text>}{state.ispOperation && state.ispOperation.status !== 'succeeded' && <Text>! 上次 ISP 操作 {state.ispOperation.status} / {stageLabels[state.ispOperation.phase] ?? state.ispOperation.phase}；进入 ISP 查看记录。</Text>}{state.operationIssue && <Text>{state.operationIssue}</Text>}{state.problems.slice(0, 2).map((problem) => <Text key={problem}>{clean(problem)}</Text>)}</>}
+    {small && screen !== 'discard' ? <><Text>请将终端调整到至少 60 列 × 18 行；草稿已保留。</Text><Text>当前 {size.columns} × {size.rows} · Ctrl+C 退出 / 请求安全停止</Text></> : <>
+      {screen === 'home' && <>
+        <Text>部署：{{ empty: '尚未初始化', ready: '配置已存在；服务运行状态未检查', incomplete: '文件不完整', inconsistent: '配置需要核对' }[state.kind]}</Text>
+        <Text>ISP：{state.isp ? '已配置；应用路由未验证' : '未配置'}</Text>
+        {state.operation && state.operation.state !== 'complete' && <Text>
+          ! 上次操作 {state.operation.state} / {state.operation.stage}；请先核对文件与服务。
+        </Text>}
+        {state.ispOperation && state.ispOperation.status !== 'succeeded' && <Text>
+          ! 上次 ISP 操作 {state.ispOperation.status} / {stageLabels[state.ispOperation.phase] ?? state.ispOperation.phase}；进入 ISP 查看记录。
+        </Text>}
+        {state.operationIssue && <Text>{state.operationIssue}</Text>}
+        {state.problems.slice(0, 2).map((problem) => <Text key={problem}>{clean(problem)}</Text>)}
+      </>}
       {screen === 'checks' && <Text>{busy ? `正在检查 · ${elapsed}s` : checks.length ? `已完成 ${checks.length} 项，${checks.filter((check) => check.blocks).length} 项阻塞；Enter 查看详情` : '按 Enter 开始只读检查，不安装软件、不提权。'}</Text>}
       {screen === 'network' && <><Text dimColor>端口修改后旧检查失效；本地空闲不等于公网可达。</Text>{probes.map((probe) => <Text key={`${probe.port}/${probe.protocol}`}>{probe.port}/{probe.protocol} [{({ free: '未发现占用', occupied: '冲突', unknown: '未知' })[probe.state]}] · {probe.source}</Text>)}</>}
       {screen === 'isp' && <><Text dimColor>{flow === 'setup' ? '可跳过；启用后需要用户名和密码。' : '只修改 .env / config.json，保留现有服务端路由。'}</Text>{ispState?.differences.length ? <Text>! .env 与 config.json 存在差异；“保留”使用 .env 值。</Text> : null}{tested && <Text>{tested.ok ? `出口校验通过：${tested.actualIp}` : `测试未通过：${clean(tested.error ?? '已取消')}`}</Text>}<Text dimColor>{busy ? `测试中 ${elapsed}s，Ctrl+C 取消` : '测试经代理请求 api.ipify.org 等 HTTPS 服务；提交时重新校验。'}</Text></>}
@@ -248,12 +265,15 @@ function App({ projectDir, env, finish, signal }: { projectDir: string; env: Nod
       {screen === 'info' && infoLines.slice(infoOffset, infoOffset + infoPageSize).map((line, index) => <Text key={index}>{line}</Text>)}
       {screen === 'discard' && <Text>继续会清空当前操作草稿；尚未写入配置文件。</Text>}
       {screen === 'help' && <><Text>Tab / Shift+Tab：移动焦点；菜单内 ↑ / ↓ 移动。</Text><Text>Enter：激活按钮；输入框内转到下一个控件。</Text><Text>Esc：返回；有草稿先确认。Ctrl+C：退出 / 安全停止。</Text><Text>Ctrl+R：临时显示当前输入的凭据，10 秒或失焦后隐藏。</Text><Text>?：非输入框内打开帮助。NO_COLOR 禁用颜色。</Text></>}
-      {start > 0 && <Text dimColor>↑ 上方还有 {start} 项</Text>}
-      {visible.map((control, index) => { const selected = start + index === focus; return <Box key={control.id} gap={1}>
-        <Box width={control.kind === 'field' ? Math.min(36, Math.floor(size.columns / 2)) : size.columns - 4} flexShrink={0}><Text wrap="truncate-end" color={selected ? color : undefined}>{selected ? '›' : ' '} {control.label}{control.kind === 'field' ? '：' : ''}</Text></Box>
-        {control.kind === 'field' && <LineInput value={control.value ?? ''} onChange={control.change!} focus={selected && !busy} masked={!!control.secret && !reveal} placeholder={control.placeholder} columns={size.columns - Math.min(36, Math.floor(size.columns / 2)) - 5} />}
-      </Box>; })}
-      {start + visible.length < controls.length && <Text dimColor>↓ 下方还有 {controls.length - start - visible.length} 项（Tab 继续）</Text>}
+      <ControlList
+        controls={controls}
+        focus={focus}
+        available={available}
+        columns={size.columns}
+        busy={busy}
+        reveal={reveal}
+        color={color}
+      />
       {error && <Text bold>{clean(error)}</Text>}
       <Text dimColor>Tab 切换 · Enter 确认 · Esc 返回 · ? 帮助 · Ctrl+C {busy ? '安全停止' : '退出'}</Text>
     </>}
@@ -265,8 +285,8 @@ export async function launchTui(options: TuiOptions = {}): Promise<number> {
   const projectDir = resolve(options.cwd ?? process.cwd()), env = options.env ?? process.env;
   const controller = new AbortController();
   const wasRaw = !!process.stdin.isRaw;
-  const handlers = (['SIGTERM', 'SIGHUP'] as const).map((name, index) => {
-    const handler = () => controller.abort([143, 129][index]); process.on(name, handler); return { name, handler };
+  const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((name, index) => {
+    const handler = () => controller.abort([130, 143, 129][index]); process.on(name, handler); return { name, handler };
   });
   let instance: ReturnType<typeof render> | undefined;
   let complete!: (code: number) => void;

@@ -12,7 +12,8 @@ const result = await build({
   format: 'esm',
   bundle: true,
   ...terminalBuildOptions,
-  minify: false,
+  minify: true,
+  keepNames: true,
   sourcemap: false,
   metafile: true,
   // yaml's Node entry uses require() inside the ESM bundle.

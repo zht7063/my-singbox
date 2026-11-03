@@ -6,12 +6,13 @@ import { buildModel, type IspSocks } from '../model.js';
 import { loadEnvFile, parseEnv, renderGeneratedEnv, envWithIsp, writeFileAtomic } from '../core/env.js';
 import { parsePorts } from '../core/ports.js';
 import { generateKeys } from '../core/keys.js';
-import { composeImageTag, firewallPorts, secretValues, startNode } from '../core/start.js';
+import { composeImageTag, firewallPorts, startNode } from '../core/start.js';
 import { findPackageFile, findTemplate } from '../core/templates.js';
 import { renderSingbox, serializeSingbox } from '../core/render-config.js';
 import { renderClash } from '../core/render-clash.js';
 import { withLock } from '../core/isp.js';
-import { ispConfigSecrets } from '../core/isp-service.js';
+import { deploymentSecrets, IMAGE_PULL_TIMEOUT_MS, pause, tcpOpen } from '../core/isp-service.js';
+export { deploymentSecrets } from '../core/isp-service.js';
 import { diagnose } from './diagnostics.js';
 import { deploymentListeners, probePorts } from '../adapters/port-probe.js';
 import { runCommand, safeText, type ApplicationIO, type OperationEvent } from './system.js';
@@ -20,6 +21,12 @@ import { isValidServerAddress } from '../core/validate.js';
 
 const files = ['compose.yaml', '.env', 'config.json', 'clash.yaml'] as const;
 const recordName = '.tui-operation.json';
+function command(io: ApplicationIO, file: string, args: string[]) {
+  const pullsImage = file === 'docker' && (args[0] === 'run' || args[0] === 'compose' && args.includes('up'));
+  return (io.run ?? runCommand)(file, args, { cwd: io.projectDir, env: io.env, signal: io.signal,
+    ...(pullsImage ? { timeout: IMAGE_PULL_TIMEOUT_MS } : {}),
+  });
+}
 export interface DeploymentDraft { serverAddress: string; ports: { ss: number; vless: number }; isp?: IspSocks }
 export interface DeploymentState {
   kind: 'empty' | 'ready' | 'incomplete' | 'inconsistent';
@@ -122,13 +129,7 @@ export async function applyDeployment(io: ApplicationIO, plan: DeploymentPlan): 
   const created: string[] = [], warnings: string[] = [];
   let stage = 'preflight', staging: string | undefined, recorded = false;
   const event = (status: OperationEvent['status'], message: string) => io.onEvent?.({ stage, status, message });
-  const run = io.run ?? runCommand;
-  const exec = async (file: string, args: string[]) => {
-    const result = await run(file, args, { cwd: io.projectDir, env: io.env, signal: io.signal });
-    const text = safeText(result.stdout + result.stderr, secrets);
-    if (text.trim()) io.onLog?.(text);
-    return { ...result, stdout: safeText(result.stdout, secrets), stderr: safeText(result.stderr, secrets) };
-  };
+  const exec = (file: string, args: string[]) => command(io, file, args);
   const record = (state = 'running') => { saveOperation(io.projectDir, { id: plan.id, state, stage, created }); recorded = true; };
   try {
     return await withLock(io.projectDir, async () => {
@@ -154,7 +155,7 @@ export async function applyDeployment(io: ApplicationIO, plan: DeploymentPlan): 
         const credentials = await generateKeys({
           runSingbox: async (args) => {
             // Key generation output itself contains secrets: never forward it.
-            const result = await run('docker', ['run', '--rm', `ghcr.io/sagernet/sing-box:${plan.version}`, ...args], { cwd: io.projectDir, env: io.env, signal: io.signal });
+            const result = await exec('docker', ['run', '--rm', `ghcr.io/sagernet/sing-box:${plan.version}`, ...args]);
             if (result.code) throw new Error('Docker 凭据生成失败。');
             return result.stdout;
           },
@@ -171,8 +172,10 @@ export async function applyDeployment(io: ApplicationIO, plan: DeploymentPlan): 
         const candidate = join(staging, 'config.json');
         writeFileAtomic(candidate, config, { exclusive: true });
         stage = 'validate'; record(); event('running', '校验候选 sing-box 配置');
-        if ((await exec('docker', ['run', '--rm', '-v', `${candidate}:/etc/sing-box/config.json:ro`, `ghcr.io/sagernet/sing-box:${plan.version}`, 'check', '-c', '/etc/sing-box/config.json'])).code)
-          throw new Error('sing-box 拒绝候选配置；尚未发布部署文件。');
+        const checked = await exec('docker', ['run', '--rm', '-v', `${candidate}:/etc/sing-box/config.json:ro`, `ghcr.io/sagernet/sing-box:${plan.version}`, 'check', '-c', '/etc/sing-box/config.json']);
+        const diagnostic = safeText(checked.stdout + checked.stderr, secrets);
+        if (diagnostic.trim()) io.onLog?.(diagnostic);
+        if (checked.code) throw new Error('sing-box 拒绝候选配置；尚未发布部署文件。');
         event('done', '候选配置校验通过');
         io.signal?.throwIfAborted();
         if (deploymentRevision(io.projectDir) !== plan.baseRevision) throw new Error('校验期间文件或模板被外部修改，请重新预览。');
@@ -204,33 +207,6 @@ export async function applyDeployment(io: ApplicationIO, plan: DeploymentPlan): 
   }
 }
 
-async function tcpOpen(port: number, signal?: AbortSignal): Promise<boolean> {
-  const { createConnection } = await import('node:net');
-  signal?.throwIfAborted();
-  return new Promise((resolve) => {
-    const socket = createConnection({ host: '127.0.0.1', port });
-    const finish = (value: boolean) => { signal?.removeEventListener('abort', abort); socket.destroy(); resolve(value); };
-    const abort = () => finish(false);
-    signal?.addEventListener('abort', abort, { once: true });
-    socket.setTimeout(500, () => finish(false)); socket.once('connect', () => finish(true)); socket.once('error', () => finish(false));
-  });
-}
-function pause(ms: number, signal?: AbortSignal): Promise<void> {
-  signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); reject(signal?.reason ?? new Error('操作已取消。')); };
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
-    signal?.addEventListener('abort', abort, { once: true });
-  });
-}
-
-export function deploymentSecrets(projectDir: string): string[] {
-  const secrets: string[] = [];
-  try { secrets.push(...secretValues(readFileSync(join(projectDir, '.env'), 'utf8'))); } catch { /* Optional or invalid file. */ }
-  try { secrets.push(...ispConfigSecrets(JSON.parse(readFileSync(join(projectDir, 'config.json'), 'utf8')))); } catch { /* Diagnosed separately. */ }
-  return secrets;
-}
-
 export async function startDeployment(io: ApplicationIO, baseRevision?: string): Promise<DeploymentResult> {
   const secrets = deploymentSecrets(io.projectDir);
   const warnings: string[] = [];
@@ -239,8 +215,7 @@ export async function startDeployment(io: ApplicationIO, baseRevision?: string):
       if (baseRevision && deploymentRevision(io.projectDir) !== baseRevision) throw new Error('文件或模板已变化，请重新预览启动操作。');
       const checks = await diagnose(io);
       if (checks.some((check) => check.blocks)) throw new Error('运行条件不满足，请先查看诊断。');
-      const run = io.run ?? runCommand;
-      const exec = (file: string, args: string[]) => run(file, args, { cwd: io.projectDir, env: io.env, signal: io.signal });
+      const exec = (file: string, args: string[]) => command(io, file, args);
       if (baseRevision && deploymentRevision(io.projectDir) !== baseRevision) throw new Error('检查期间文件已变化，请重新预览启动操作。');
       io.onEvent?.({ stage: 'start', status: 'running', message: '启动并检查当前配置' });
       await startNode({ project: io.projectDir, deps: { run: exec, tcpOpen: (port) => tcpOpen(port, io.signal), sleep: (ms) => pause(ms, io.signal) },

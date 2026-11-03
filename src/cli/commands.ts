@@ -1,6 +1,4 @@
 import { runDoctor } from '../doctor/checks.js';
-import { withLock } from '../core/isp.js';
-import { resolve } from 'node:path';
 import type { System } from '../doctor/system.js';
 import { genKeys } from './gen-keys.js';
 import { genConfig } from './gen-config.js';
@@ -113,11 +111,9 @@ async function dispatch(argv: string[], io: IO): Promise<number> {
     }
     return runDoctor(io.system, io.stdout);
   }
-  return withLock(resolve(io.cwd ?? process.cwd()), async () => {
-    if (cmd === 'gen-keys') return genKeys(io);
-    if (cmd === 'gen-config') return genConfig(io);
-    if (cmd === 'conf-clash') return confClash(io);
-    if (cmd === 'init') return init(io);
-    return start(io);
-  });
+  if (cmd === 'gen-keys') return genKeys(io);
+  if (cmd === 'gen-config') return genConfig(io);
+  if (cmd === 'conf-clash') return confClash(io);
+  if (cmd === 'init') return init(io);
+  return start(io);
 }

@@ -12,11 +12,11 @@ import {
   type ManagedFile,
 } from '../core/isp.js';
 import { envUnquote, envWithIsp, envWithoutIsp } from '../core/env.js';
-import { IspService, sameIspIp, createIspRedactor as sanitizer, ispConfigSecrets as configSecrets } from '../core/isp-service.js';
+import { IspService, sameIspIp, createIspRedactor as sanitizer, deploymentSecrets as diskSecrets, type CommandRunner } from '../core/isp-service.js';
+import { diagnose } from './diagnostics.js';
 import { loadSingboxTemplate, type SingboxConfig } from '../core/render-config.js';
 import { isIspRule, isLegacyIspRule } from '../core/routing.js';
 import { findTemplate } from '../core/templates.js';
-import { secretValues } from '../core/start.js';
 import { isIpv4, isIpv6Strict, parseIspAddr, validCred } from '../core/validate.js';
 
 export interface IspDraft {
@@ -42,6 +42,7 @@ export interface IspIO {
   stdout?(text: string): void;
   stderr?(text: string): void;
   sleep?(ms: number): Promise<void>;
+  run?: CommandRunner;
   signal?: AbortSignal;
   onEvent?(event: IspEvent): void;
 }
@@ -283,8 +284,8 @@ function safeValue(value: unknown, clean: (text: string) => string): unknown {
 }
 function adapter(io: IspIO, dir: string, secrets: readonly string[], signal?: AbortSignal) {
   const clean = sanitizer(secrets);
-  return new IspService({ projectDir: dir, env: io.env, sleep: io.sleep, signal,
-    stdout: (text) => io.stdout?.(clean(text)), stderr: (text) => io.stderr?.(clean(text)),
+  return new IspService({ projectDir: dir, env: io.env, sleep: io.sleep, run: io.run, signal,
+    stdout: (text) => io.stdout?.(text), stderr: (text) => io.stderr?.(text),
     sanitizeOutput: clean,
   });
 }
@@ -292,13 +293,6 @@ function event(io: IspIO, phase: IspPhase, status: IspEvent['status'], message?:
   // UI observers must not prevent installation or, especially, recovery.
   try { io.onEvent?.({ operation: 'isp', phase, status, ...(message ? { message } : {}) }); } catch { /* observer only */ }
 }
-function diskSecrets(dir: string): string[] {
-  const values: string[] = [];
-  try { values.push(...secretValues(readFileSync(join(dir, '.env'), 'utf8'))); } catch { /* optional */ }
-  try { values.push(...configSecrets(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')))); } catch { /* optional */ }
-  return values;
-}
-
 export async function testIsp(io: IspIO, draft: IspDraft, signal = io.signal): Promise<IspTestResult> {
   const dir = project(io);
   const clean = sanitizer([...diskSecrets(dir), draft.user, draft.pass]);
@@ -463,6 +457,9 @@ export async function applyIspPlan(io: IspIO, plan: IspPlan, signal = io.signal)
         };
         persist(true);
         const image = await stage('preflight', async () => {
+          const checks = await diagnose({ projectDir: dir, env: io.env, signal, run: io.run, isp: !!context.isp });
+          const blockers = checks.filter((check) => check.blocks);
+          if (blockers.length) throw new IspError(`ISP apply requirements are not met: ${blockers.map((check) => check.summary).join(', ')}. Check deployment diagnostics.`);
           accessSync(dir, constants.W_OK);
           for (const name of MANAGED_FILES) {
             const file = join(dir, name);

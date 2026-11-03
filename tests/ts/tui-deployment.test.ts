@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { createServer, type Server, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyDeployment, planDeployment, readDeployment } from '../../src/app/deployment.js';
+import { applyDeployment, planDeployment, readDeployment, startDeployment } from '../../src/app/deployment.js';
+import { IMAGE_PULL_TIMEOUT_MS } from '../../src/core/isp-service.js';
 import type { CommandRunner } from '../../src/app/system.js';
 import { creds } from './helpers/fixtures.js';
 import { parse as parseYaml } from 'yaml';
@@ -40,7 +41,13 @@ describe('initial deployment use case', () => {
     const projectDir = directory(), ports = { ss: await listener(), vless: await listener() };
     const plan = planDeployment(projectDir, { serverAddress: 'node.example.test', ports });
     let output = '';
-    const result = await applyDeployment({ projectDir, run: commands(ports), onLog: (text) => { output += text; }, onEvent: (event) => { output += event.message; } }, plan);
+    const base = commands(ports);
+    const run = vi.fn<CommandRunner>(async (file, args, options) => {
+      const result = await base(file, args, options);
+      if (args.includes('up')) result.stdout = `startup output ${creds.ssPassword}\n`;
+      return result;
+    });
+    const result = await applyDeployment({ projectDir, run, onLog: (text) => { output += text; }, onEvent: (event) => { output += event.message; } }, plan);
     expect(result.ok).toBe(true);
     const server = JSON.parse(readFileSync(join(projectDir, 'config.json'), 'utf8'));
     const client = parseYaml(readFileSync(join(projectDir, 'clash.yaml'), 'utf8'));
@@ -48,6 +55,10 @@ describe('initial deployment use case', () => {
     expect(client.proxies.map((proxy: { port: number }) => proxy.port)).toEqual([ports.ss, ports.vless]);
     for (const name of ['.env', 'config.json', 'clash.yaml', '.tui-operation.json']) expect(statSync(join(projectDir, name)).mode & 0o777).toBe(0o600);
     expect(output).not.toContain(creds.realityPrivateKey); expect(output).not.toContain(creds.ssPassword);
+    expect(output.match(/startup output/g)).toHaveLength(1);
+    const imageCommands = run.mock.calls.filter(([, args]) => args[0] === 'run' || args.includes('up'));
+    expect(imageCommands).toHaveLength(4);
+    for (const [, , options] of imageCommands) expect(options.timeout).toBe(IMAGE_PULL_TIMEOUT_MS);
     expect(readDeployment(projectDir).kind).toBe('ready');
     expect(readdirSync(projectDir).some((name) => name.startsWith('.tui-stage-') || name === '.isp.lock')).toBe(false);
   });
@@ -74,6 +85,30 @@ describe('initial deployment use case', () => {
     expect(readDeployment(projectDir).operation?.state).toBe('failed');
     expect(() => planDeployment(projectDir, { serverAddress: 'node.example.test', ports })).toThrow('已有部署文件');
     expect(readFileSync(join(projectDir, '.env'), 'utf8')).toBe(original);
+  });
+  it('allows image pulling when restarting an existing deployment', async () => {
+    const projectDir = directory(), ports = { ss: await listener(), vless: await listener() };
+    const first = await applyDeployment({ projectDir, run: commands(ports, 'start') }, planDeployment(projectDir, { serverAddress: 'node.example.test', ports }));
+    expect(first.ok).toBe(false);
+    const credentials = readFileSync(join(projectDir, '.env'), 'utf8');
+    const run = vi.fn(commands(ports));
+    const result = await startDeployment({ projectDir, run });
+    expect(result.ok, result.message).toBe(true);
+    expect(run.mock.calls.find(([, args]) => args.includes('up'))?.[2].timeout).toBe(IMAGE_PULL_TIMEOUT_MS);
+    expect(readFileSync(join(projectDir, '.env'), 'utf8')).toBe(credentials);
+    expect(readDeployment(projectDir).operation?.state).toBe('complete');
+  });
+  it('preserves published files and records cancellation during startup', async () => {
+    const projectDir = directory(), ports = { ss: 18388, vless: 18443 }, controller = new AbortController();
+    const base = commands(ports);
+    const result = await applyDeployment({ projectDir, signal: controller.signal,
+      run: async (file, args, options) => { options.signal?.throwIfAborted(); return base(file, args, options); },
+      onEvent: (event) => { if (event.stage === 'start' && event.status === 'running') controller.abort(new Error('cancel startup')); },
+    }, planDeployment(projectDir, { serverAddress: 'node.example.test', ports }));
+    expect(result).toMatchObject({ ok: false, cancelled: true, created: ['compose.yaml', '.env', 'config.json', 'clash.yaml'] });
+    expect(readDeployment(projectDir).operation?.state).toBe('interrupted');
+    expect(readDeployment(projectDir).kind).toBe('ready');
+    expect(existsSync(join(projectDir, '.isp.lock'))).toBe(false);
   });
   it('candidate rejection leaves no generated deployment files', async () => {
     const projectDir = directory(), ports = { ss: 18388, vless: 18443 };

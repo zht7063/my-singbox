@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { IMAGE_PULL_TIMEOUT_MS, runCommand } from './isp-service.js';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { get } from 'node:https';
 import {
@@ -49,16 +49,15 @@ export async function generateKeys(deps: KeyDeps) {
 }
 
 export type DockerRun = (file: string, args: string[]) => Promise<string>;
-const execute: DockerRun = (file, args) =>
-  new Promise((resolve, reject) =>
-    execFile(
-      file,
-      args,
-      { timeout: 120000, maxBuffer: 1024 * 1024 },
-      (err, out) =>
-        err ? reject(new Error('Docker command failed.')) : resolve(out),
-    ),
-  );
+const execute: DockerRun = async (file, args) => {
+  try {
+    const result = await runCommand(file, args, { cwd: process.cwd(),
+      timeout: args[0] === 'run' ? IMAGE_PULL_TIMEOUT_MS : 120_000,
+    });
+    if (result.code) throw new Error('Docker command failed.');
+    return result.stdout;
+  } catch { throw new Error('Docker command failed.'); }
+};
 
 export function defaultKeyDeps(image: string): KeyDeps {
   return {
@@ -132,7 +131,7 @@ export async function detectPublicIp(
     for (const url of [...urls, 'https://1.1.1.1/cdn-cgi/trace']) {
       try {
         signal?.throwIfAborted();
-        const body = await (signal ? deps.httpGet(url, family, signal) : deps.httpGet(url, family));
+        const body = await deps.httpGet(url, family, signal);
         const ip = (
           url.endsWith('/trace')
             ? (body

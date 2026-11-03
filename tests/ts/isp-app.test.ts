@@ -6,10 +6,13 @@ import {
   type IspDraft, type IspEvent, type IspIO,
 } from '../../src/app/isp.js';
 import { installFile } from '../../src/core/isp.js';
-import { IspService, sameIspIp } from '../../src/core/isp-service.js';
+import { IspService, IMAGE_PULL_TIMEOUT_MS, runCommand, sameIspIp } from '../../src/core/isp-service.js';
+import { diagnose } from '../../src/app/diagnostics.js';
+import type { System } from '../../src/doctor/system.js';
 import { envQuote } from '../../src/core/env.js';
 import { setupIsp, username, password, type IspHarness } from './helpers/isp.js';
 
+vi.mock('../../src/app/diagnostics.js', () => ({ diagnose: vi.fn(async () => []) }));
 vi.mock('../../src/core/isp.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/isp.js')>();
   return { ...actual, installFile: vi.fn(actual.installFile) };
@@ -18,6 +21,7 @@ afterEach(() => vi.mocked(installFile).mockRestore());
 let h: IspHarness, io: IspIO, output: string, events: IspEvent[];
 const draft = (): IspDraft => ({ host: '198.51.100.7', port: 1080, user: username, pass: password });
 beforeEach(async () => {
+  vi.mocked(diagnose).mockReset().mockResolvedValue([]);
   h = await setupIsp();
   output = ''; events = [];
   io = { projectDir: h.dir, env: h.env, sleep: async () => {},
@@ -118,6 +122,37 @@ it('describes mismatch separately from unknown TCP/authentication failure', asyn
 it('does not accept a valid looking echo body from a failed curl request', async () => {
   h.stub('curl', 'cat > /dev/null\nprintf "198.51.100.7\\n"\nexit 7');
   expect((await testIsp(io, draft())).ok).toBe(false);
+});
+
+it.each([
+  { name: 'unsupported OS', platform: 'darwin', release: 'ID=debian', endpoint: 'unix:///var/run/docker.sock', action: 'add' },
+  { name: 'unsupported distro', platform: 'linux', release: 'ID=fedora', endpoint: 'unix:///var/run/docker.sock', action: 'add' },
+  { name: 'remote Docker context', platform: 'linux', release: 'ID=debian', endpoint: 'ssh://remote.example', action: 'add' },
+  { name: 'remote Docker host on removal', platform: 'linux', release: 'ID=ubuntu', endpoint: 'unix:///var/run/docker.sock', host: 'tcp://remote.example:2375', action: 'remove' },
+] as const)('rejects $name at ISP apply before proxy tests, backups or service mutation', async (testCase) => {
+  if ('host' in testCase) io.env = { ...h.env, DOCKER_HOST: testCase.host };
+  const actual = await vi.importActual<typeof import('../../src/app/diagnostics.js')>('../../src/app/diagnostics.js');
+  const system: System = { nodeVersion: '22.0.0', platform: testCase.platform, arch: 'x64', glibcVersionRuntime: '2.36',
+    exec: async () => '', socketAccessible: () => true, username: () => 'tester' };
+  vi.mocked(diagnose).mockImplementationOnce((options) => actual.diagnose({ ...options, system, osRelease: testCase.release,
+    run: async (_file, args) => ({ code: 0, stdout: args[0] === 'context' ? testCase.endpoint : 'available', stderr: '' }),
+  }));
+  const before = h.snapshot();
+  const plan = testCase.action === 'add' ? addPlan() : removePlan();
+  const result = await applyIspPlan(io, plan);
+  expect(result).toMatchObject({ ok: false, failedStage: 'preflight', files: 'unchanged', service: 'not-checked' });
+  expect(result.error).toContain('requirements are not met');
+  expect(diagnose).toHaveBeenCalledWith(expect.objectContaining({ projectDir: h.dir, env: io.env, isp: testCase.action === 'add' }));
+  expect(h.snapshot()).toBe(before);
+  expect(h.log()).toBe('');
+  expect(h.backups()).toEqual([]);
+  cleanRuntime();
+});
+
+it('preserves the existing CLI ISP behavior for remote Docker settings', async () => {
+  Object.assign(h.env, { DOCKER_HOST: 'ssh://remote.example' });
+  expect((await h.add()).code).toBe(0);
+  expect(diagnose).not.toHaveBeenCalled();
 });
 
 it('enforces an egress test at final apply and leaves files unchanged on failure', async () => {
@@ -356,6 +391,49 @@ it('allows cancellation before testing without commands, writes, or a success cl
   expect(h.snapshot()).toBe(before);
   expect(h.log()).toBe('');
   expect(h.backups()).toEqual([]);
+});
+
+it('allows fifteen minutes for ISP commands that may pull images, while keeping probes short', async () => {
+  const controller = new AbortController();
+  const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+  const service = new IspService({ projectDir: h.dir, env: h.env, signal: controller.signal, run,
+    stdout: () => {}, stderr: () => {} });
+  expect(await service.composeAvailable()).toBe(true);
+  expect(run.mock.calls.at(-1)).toEqual(['docker', ['compose', 'version'], expect.objectContaining({ timeout: 120_000 })]);
+  expect(await service.recreate()).toBe(true);
+  expect(run.mock.calls.at(-1)).toEqual(['docker', expect.arrayContaining(['up']), expect.objectContaining({ timeout: IMAGE_PULL_TIMEOUT_MS, signal: controller.signal })]);
+  expect(await service.checkCandidate('image', '/candidate')).toBe(true);
+  expect(run.mock.calls.at(-1)).toEqual(['docker', expect.arrayContaining(['run']), expect.objectContaining({ timeout: IMAGE_PULL_TIMEOUT_MS })]);
+});
+
+it('redacts complete command output once at the ISP service boundary', async () => {
+  const originalDocker = h.read('stubs/docker');
+  h.stub('docker', `if [[ "$1" == run ]]; then printf '*\\n'; fi\n${originalDocker}`);
+  const plan = planIspChange(io, { action: 'add', isp: { ...draft(), user: '*' } });
+  const result = await applyIspPlan(io, plan);
+  expect(result.ok, result.error).toBe(true);
+  expect(output).toBe('***\n');
+});
+
+it('bounds captured command output before any observer receives it', async () => {
+  await expect(runCommand(process.execPath, ['-e', 'process.stdout.write("x".repeat(5 * 1024 * 1024))'], {
+    cwd: h.dir, timeout: 1000, killGraceMs: 30,
+  })).rejects.toThrow('输出超过限制');
+});
+
+it.skipIf(process.platform === 'win32')('reports unexpected group kill failures after escalation closes the child', async () => {
+  const actualKill = process.kill.bind(process);
+  const denied = Object.assign(new Error('fixture permission denied'), { code: 'EPERM' });
+  const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+    if (pid < 0 && signal === 'SIGTERM') throw denied;
+    return actualKill(pid, signal);
+  });
+  try {
+    await expect(runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      cwd: h.dir, timeout: 30, killGraceMs: 30,
+    })).rejects.toMatchObject({ message: expect.stringContaining('Could not send SIGTERM'), cause: denied });
+    expect(kill.mock.calls.map(([, signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  } finally { kill.mockRestore(); }
 });
 
 it('times out commands and escalates cancellation for subprocesses that ignore TERM', async () => {
