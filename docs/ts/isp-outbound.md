@@ -24,7 +24,7 @@ The default server template, `templates/config.json.template`, contains the opti
 - `http-intake.logs.us5.datadoghq.com`
 - `browser-intake-us5-datadoghq.com`
 
-The server template owns this list; changing it does not change the client's domain list. Edit the effective server template before generation, or edit an existing `config.json` to adjust its current policy. With no ISP settings, generation omits top-level rules whose `outbound` is `isp-socks`, retaining sniffing and `route.final: "direct"`. Unsupported dependencies on a missing ISP outbound, such as `route.final: "isp-socks"` or an outbound `detour`, produce an error instead of silently changing the policy.
+With ISP configured, generation writes this `domain_suffix` rule into the server's `config.json`; incremental ISP addition copies it there when no ISP rules exist. It is not a rule in `clash.yaml`, whose rules, rule providers, and DNS settings remain unchanged. It only affects traffic the client has already sent to the VPS. The server template owns this list; changing it does not change the client's domain list. Edit the effective server template before generation, or edit an existing `config.json` to adjust its current policy. With no ISP settings, generation omits top-level rules whose `outbound` is `isp-socks`, retaining sniffing and `route.final: "direct"`. Unsupported dependencies on a missing ISP outbound, such as `route.final: "isp-socks"` or an outbound `detour`, produce an error instead of silently changing the policy.
 
 ## Add and update
 

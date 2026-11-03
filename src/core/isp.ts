@@ -14,9 +14,9 @@ import { ENV_HEADER, ENV_HEADER_NOEOL } from './env.js';
 import { ensureRoute, isLegacyIspRule, isRecord, omitIsp, upsertIspOutbound, type RoutePolicy } from './routing.js';
 
 export const ISP_BACKUP_DIR = '.isp-backup', ISP_LOCK_FILE = '.isp.lock',
-  ISP_TMP_PREFIX = '.isp-tmp.', GROUP_MAIN = 'Proxy';
+  ISP_TMP_PREFIX = '.isp-tmp.';
 export const MANAGED_FILES = ['config.json', '.env'] as const;
-export type ManagedFile = typeof MANAGED_FILES[number] | 'clash.yaml';
+export type ManagedFile = typeof MANAGED_FILES[number];
 export class IspError extends Error {
   override name = 'IspError';
 }
