@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.0
+
+### Features
+
+- Add `my-singbox tui`, an interactive terminal UI with a deployment wizard, ISP outbound management (add, update, remove) and a status page. Existing commands and flags are unchanged. (#28)
+- Clear Docker permission guidance in the TUI, `doctor` and `isp-outbound` when the user cannot access the Docker daemon.
+
+### Known issues
+
+- With a user-level install, the suggested `sudo my-singbox ...` is not found; use `sudo env "PATH=$PATH" my-singbox ...` instead. (#29)
+- Minor TUI input rendering and wording issues. (#30, #31)
+
 ## 3.0.1
 
 ### Fixes
