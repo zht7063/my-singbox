@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createConnection, Socket } from 'node:net';
 import { parse } from 'yaml';
 import {
-  IspError, ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, MANAGED_FILES, GROUP_MAIN,
+  IspError, ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, MANAGED_FILES,
   envGet, envHasIsp, checkIspConfig, configHasIsp,
   addIspToConfig, removeIspFromConfig, makeTmpPath, installFile, makeBackup,
   restoreBackup, sweepStaleTmp, withLock, IspService,
@@ -36,7 +36,7 @@ function canonical(value: unknown): string {
 }
 
 it('AC2 package exports ISP constants and IspError', () => {
-  expect([ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX, GROUP_MAIN]).toEqual(['.isp-backup', '.isp.lock', '.isp-tmp.', 'Proxy']);
+  expect([ISP_BACKUP_DIR, ISP_LOCK_FILE, ISP_TMP_PREFIX]).toEqual(['.isp-backup', '.isp.lock', '.isp-tmp.']);
   expect(MANAGED_FILES).toEqual(['config.json', '.env']);
   const error = new IspError('fixture failure');
   expect(error).toBeInstanceOf(Error); expect(error.name).toBe('IspError');

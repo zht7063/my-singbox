@@ -56,6 +56,8 @@ npx my-singbox isp-outbound --remove
 
 Clash 保留现有规则、规则集和 DNS 设置，决定流量由客户端直连还是进入 VPS。服务端 `config.json` 独立决定 VPS 的出口：配置 ISP 时，sing-box 先嗅探流量，将模板中指定的域名交给 `isp-socks`，其余流量默认走 `direct`；未配置 ISP 时省略可选 ISP 规则，默认出口仍为 `direct`。两种模式都只使用 8388 和 8443 上的两个基础入站及对应客户端节点，ISP 不新增监听端口或客户端节点。
 
+默认 ISP 域名规则来自 `templates/config.json.template`，配置 ISP 后写入服务端 `config.json`，通过 `domain_suffix` 匹配 `anthropic.com`、`claude.ai`、`claude.com`、`claudeusercontent.com`、`http-intake.logs.us5.datadoghq.com` 和 `browser-intake-us5-datadoghq.com`。这些规则控制服务端出口，不会新增或修改 `clash.yaml` 中的规则，仅对客户端已发送到 VPS 的流量生效。
+
 添加和移除只管理 `config.json` 与 `.env`，备份及失败回滚也仅涉及这两个文件，始终不读写 `clash.yaml`。移除直接修改当前配置，保留无关路由和后续自定义修改，无需添加 ISP 前的备份；更新凭据时保留已有 ISP 路由条件。默认域名、自定义路由顺序和旧配置迁移详见 [ISP 路由与迁移说明](docs/ts/isp-outbound.md)。
 
 ### doctor

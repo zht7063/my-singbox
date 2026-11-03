@@ -56,6 +56,8 @@ Add or update an ISP SOCKS5 outbound (the command asks for its address and crede
 
 Clash keeps its existing rules, rule providers, and DNS settings: it chooses whether traffic goes directly from the client or enters the VPS. The server's `config.json` independently chooses the VPS's outbound. With ISP configured, sing-box sniffs traffic, sends the template's selected domains through `isp-socks`, and sends other traffic through `direct`. Without ISP, the optional ISP rules are omitted and the final outbound remains `direct`. Both modes use the same two base inbounds and client nodes on ports 8388 and 8443; ISP adds no listening ports or client nodes.
 
+The default ISP domain rule comes from `templates/config.json.template` and is written to the server's `config.json` when ISP is configured. It matches `anthropic.com`, `claude.ai`, `claude.com`, `claudeusercontent.com`, `http-intake.logs.us5.datadoghq.com`, and `browser-intake-us5-datadoghq.com` using `domain_suffix`. These are server egress rules; they do not add or change rules in `clash.yaml` and apply only to traffic the client sends to the VPS.
+
 Add and remove manage only `config.json` and `.env`, including backups and failure rollback; they never read or write `clash.yaml`. Removal edits the current config, preserving unrelated routes and later customizations, and does not require a pre-ISP backup. Existing ISP route conditions are preserved when updating credentials. See [ISP routing and migration](docs/ts/isp-outbound.md) for the default domains, custom route ordering, and legacy configuration migration.
 
 ### doctor

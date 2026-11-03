@@ -52,6 +52,22 @@ it.each([false, true])('preserves custom route fields and order with ISP=%s', (e
   expect(out.route!.rules).not.toContainEqual(expect.objectContaining({ inbound: expect.anything() }));
 });
 
+it.each([false, true])('rejects non-array template route.rules with ISP=%s', (enabled) => {
+  for (const rules of [null, {}, { outbound: 'direct' }, 'invalid', '', 42, false]) {
+    const template = loadSingboxTemplate();
+    const malformed = { ...template, route: { ...template.route, rules } };
+    expect(() => renderSingbox(fixtureModel(enabled), malformed))
+      .toThrow('Invalid config.json template: route.rules must be an array.');
+  }
+});
+
+it.each([false, true])('initializes omitted template route.rules with ISP=%s', (enabled) => {
+  const template = loadSingboxTemplate();
+  delete template.route!.rules;
+  expect(renderSingbox(fixtureModel(enabled), template).route)
+    .toEqual({ rules: [{ action: 'sniff' }], final: 'direct' });
+});
+
 it.each(['final', 'detour', 'nested route'])('rejects unsupported ISP dependencies without ISP: %s', (kind) => {
   const template = loadSingboxTemplate();
   if (kind === 'final') template.route!.final = 'isp-socks';

@@ -52,6 +52,8 @@ export function renderSingbox(model: Model, template: unknown): SingboxConfig {
     tag: n.inbound.tag,
     listen_port: n.inbound.port,
   }));
+  if (config.route?.rules !== undefined && !Array.isArray(config.route.rules))
+    throw new Error('Invalid config.json template: route.rules must be an array.');
   ensureRoute(config);
   if (model.isp) upsertIspOutbound(config, model.isp);
   else omitIsp(config);
