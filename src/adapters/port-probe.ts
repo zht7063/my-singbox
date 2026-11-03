@@ -52,7 +52,7 @@ export async function probePorts(listeners: Listener[], io: ApplicationIO): Prom
   for (const protocol of new Set(listeners.map((listener) => listener.protocol))) {
     io.signal?.throwIfAborted();
     try {
-      const result = await run('ss', ['-H', protocol === 'tcp' ? '-ltn' : '-lun'], { cwd: io.projectDir, env: io.env, signal: io.signal, timeout: 5000 });
+      const result = await run('ss', ['-H', protocol === 'tcp' ? '-ltn' : '-lun'], { cwd: io.projectDir, env: io.env, signal: io.signal, timeout: 5000, processGroup: true });
       tables.set(protocol, result.code === 0 ? result.stdout : undefined);
     } catch { io.signal?.throwIfAborted(); tables.set(protocol, undefined); }
   }

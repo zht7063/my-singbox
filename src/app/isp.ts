@@ -465,10 +465,6 @@ export async function applyIspPlan(io: IspIO, plan: IspPlan, signal = io.signal)
             const file = join(dir, name);
             if (existsSync(file)) accessSync(file, constants.R_OK | constants.W_OK);
           }
-          if (!await service.composeAvailable()) throw new IspError('docker compose is not available.');
-          const docker = await service.dockerInfo();
-          if (docker !== 'ok') throw new IspError(docker === 'permission-denied'
-            ? 'Permission denied while talking to the Docker daemon.' : 'Docker daemon is not running or reachable.');
           const image = await service.containerImage();
           if (!image) throw new IspError('Container sing-box not found. Run my-singbox start first.');
           return image;

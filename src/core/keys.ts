@@ -50,13 +50,12 @@ export async function generateKeys(deps: KeyDeps) {
 
 export type DockerRun = (file: string, args: string[]) => Promise<string>;
 const execute: DockerRun = async (file, args) => {
-  try {
-    const result = await runCommand(file, args, { cwd: process.cwd(),
-      timeout: args[0] === 'run' ? IMAGE_PULL_TIMEOUT_MS : 120_000,
-    });
-    if (result.code) throw new Error('Docker command failed.');
-    return result.stdout;
-  } catch { throw new Error('Docker command failed.'); }
+  const result = await runCommand(file, args, {
+    cwd: process.cwd(),
+    timeout: args[0] === 'run' ? IMAGE_PULL_TIMEOUT_MS : 120_000,
+  }).catch(() => null);
+  if (!result || result.code) throw new Error('Docker command failed.');
+  return result.stdout;
 };
 
 export function defaultKeyDeps(image: string): KeyDeps {

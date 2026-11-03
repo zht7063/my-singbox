@@ -155,6 +155,26 @@ it('preserves the existing CLI ISP behavior for remote Docker settings', async (
   expect(diagnose).not.toHaveBeenCalled();
 });
 
+it('uses one Compose and daemon preflight from diagnose before applying ISP changes', async () => {
+  const actual = await vi.importActual<typeof import('../../src/app/diagnostics.js')>('../../src/app/diagnostics.js');
+  const system: System = {
+    nodeVersion: '22.0.0', platform: 'linux', arch: 'x64', glibcVersionRuntime: '2.36',
+    exec: async () => '', socketAccessible: () => true, username: () => 'tester',
+  };
+  vi.mocked(diagnose).mockImplementationOnce((options) => actual.diagnose({
+    ...options, system, osRelease: 'ID=debian',
+  }));
+  const run = vi.fn<typeof runCommand>(async (file, args, options) => args[0] === 'context'
+    ? { code: 0, stdout: 'unix:///var/run/docker.sock', stderr: '' }
+    : runCommand(file, args, options));
+  io.run = run;
+  const result = await applyIspPlan(io, addPlan());
+  expect(result.ok, result.error).toBe(true);
+  expect(run.mock.calls.filter(([file, args]) => file === 'docker' && args.join(' ') === 'compose version')).toHaveLength(1);
+  expect(run.mock.calls.filter(([file, args]) => file === 'docker' && args[0] === 'info')).toHaveLength(1);
+  cleanRuntime();
+});
+
 it('enforces an egress test at final apply and leaves files unchanged on failure', async () => {
   const before = h.snapshot(), plan = addPlan();
   h.switch('fail_curl');
@@ -430,7 +450,7 @@ it.skipIf(process.platform === 'win32')('reports unexpected group kill failures 
   });
   try {
     await expect(runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      cwd: h.dir, timeout: 30, killGraceMs: 30,
+      cwd: h.dir, timeout: 30, killGraceMs: 30, processGroup: true,
     })).rejects.toMatchObject({ message: expect.stringContaining('Could not send SIGTERM'), cause: denied });
     expect(kill.mock.calls.map(([, signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL']);
   } finally { kill.mockRestore(); }

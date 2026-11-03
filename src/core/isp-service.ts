@@ -17,6 +17,8 @@ export interface CommandOptions {
   timeout?: number;
   killGraceMs?: number;
   input?: string;
+  /** Isolate cancellable operations so termination reaches their descendants. */
+  processGroup?: boolean;
 }
 export type CommandRunner = (file: string, args: string[], options: CommandOptions) => Promise<CommandResult>;
 export const IMAGE_PULL_TIMEOUT_MS = 15 * 60_000;
@@ -25,7 +27,7 @@ class CommandTimeoutError extends Error {}
 /** Capture complete streams before forwarding, including secrets split across process chunks. */
 export const runCommand: CommandRunner = (file, args, options) => new Promise((resolve, reject) => {
   options.signal?.throwIfAborted();
-  const grouped = process.platform !== 'win32';
+  const grouped = options.processGroup === true && process.platform !== 'win32';
   const child = spawn(file, args, { cwd: options.cwd, env: options.env, detached: grouped, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '', spawnError: NodeJS.ErrnoException | undefined, timedOut = false, tooLarge = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -187,7 +189,7 @@ export class IspService {
     try {
       result = await (this.io.run ?? runCommand)(file, args, {
         cwd: this.io.projectDir, env: this.io.env, signal: this.io.signal,
-        timeout: timeoutMs, killGraceMs: this.io.killGraceMs ?? 2000, input,
+        timeout: timeoutMs, killGraceMs: this.io.killGraceMs ?? 2000, input, processGroup: true,
       });
     } catch (error) {
       if (!(error instanceof CommandTimeoutError)) throw error;

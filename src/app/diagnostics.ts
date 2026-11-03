@@ -46,7 +46,7 @@ export async function diagnose(options: DiagnosticOptions): Promise<Diagnostic[]
     add('directory', 'OK', '部署目录', '目录可读写。');
   } catch { add('directory', 'FAIL', '部署目录', '目录不存在或不可读写。', '请在现有的可写部署目录运行 my-singbox tui。'); }
   const run = options.run ?? runCommand;
-  const exec = (file: string, args: string[]) => run(file, args, { cwd: options.projectDir, env: options.env, signal: options.signal, timeout: 10000 });
+  const exec = (file: string, args: string[]) => run(file, args, { cwd: options.projectDir, env: options.env, signal: options.signal, timeout: 10000, processGroup: true });
   const probe = async (file: string, args: string[]) => {
     options.signal?.throwIfAborted();
     try { return await exec(file, args); }

@@ -62,6 +62,20 @@ describe('initial deployment use case', () => {
     expect(readDeployment(projectDir).kind).toBe('ready');
     expect(readdirSync(projectDir).some((name) => name.startsWith('.tui-stage-') || name === '.isp.lock')).toBe(false);
   });
+  it('normalizes raw form ports at the planning boundary and rejects invalid inputs', () => {
+    const projectDir = directory();
+    const plan = planDeployment(projectDir, {
+      serverAddress: 'node.example.test', ports: { ss: '18388', vless: '18443' },
+    });
+    expect(plan.listeners).toEqual(['18388/tcp', '18388/udp', '18443/tcp']);
+    for (const ports of [
+      { ss: '', vless: '8443' }, { ss: '8388\n', vless: '8443' },
+      { ss: '8388', vless: '8388' }, { ss: '65536', vless: '8443' },
+    ]) {
+      expect(() => planDeployment(projectDir, { serverAddress: 'node.example.test', ports })).toThrow();
+    }
+    expect(readdirSync(projectDir)).toEqual([]);
+  });
   it('rejects stale plans before running external commands', async () => {
     const projectDir = directory();
     const plan = planDeployment(projectDir, { serverAddress: 'node.example.test', ports: { ss: 18388, vless: 18443 } });

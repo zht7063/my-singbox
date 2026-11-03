@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import { buildModel, type IspSocks } from '../model.js';
 import { loadEnvFile, parseEnv, renderGeneratedEnv, envWithIsp, writeFileAtomic } from '../core/env.js';
-import { parsePorts } from '../core/ports.js';
+import { parsePorts, type Ports } from '../core/ports.js';
 import { generateKeys } from '../core/keys.js';
 import { composeImageTag, firewallPorts, startNode } from '../core/start.js';
 import { findPackageFile, findTemplate } from '../core/templates.js';
@@ -23,11 +23,15 @@ const files = ['compose.yaml', '.env', 'config.json', 'clash.yaml'] as const;
 const recordName = '.tui-operation.json';
 function command(io: ApplicationIO, file: string, args: string[]) {
   const pullsImage = file === 'docker' && (args[0] === 'run' || args[0] === 'compose' && args.includes('up'));
-  return (io.run ?? runCommand)(file, args, { cwd: io.projectDir, env: io.env, signal: io.signal,
+  return (io.run ?? runCommand)(file, args, { cwd: io.projectDir, env: io.env, signal: io.signal, processGroup: true,
     ...(pullsImage ? { timeout: IMAGE_PULL_TIMEOUT_MS } : {}),
   });
 }
-export interface DeploymentDraft { serverAddress: string; ports: { ss: number; vless: number }; isp?: IspSocks }
+export interface DeploymentDraft {
+  serverAddress: string;
+  ports: { ss: string | number; vless: string | number };
+  isp?: IspSocks;
+}
 export interface DeploymentState {
   kind: 'empty' | 'ready' | 'incomplete' | 'inconsistent';
   files: { name: string; exists: boolean }[];
@@ -95,14 +99,16 @@ export interface DeploymentPlan {
   version: string;
   allowUnknownPorts: boolean;
 }
-const drafts = new WeakMap<DeploymentPlan, { projectDir: string; draft: DeploymentDraft }>();
+const drafts = new WeakMap<DeploymentPlan, { projectDir: string; draft: DeploymentDraft & { ports: Ports } }>();
 
 export function planDeployment(projectDir: string, input: DeploymentDraft, allowUnknownPorts = false): DeploymentPlan {
   const project = resolve(projectDir);
-  const draft = structuredClone(input);
-  draft.serverAddress = draft.serverAddress.trim();
+  const draft = {
+    ...structuredClone(input),
+    serverAddress: input.serverAddress.trim(),
+    ports: parsePorts(input.ports),
+  };
   if (!isValidServerAddress(draft.serverAddress)) throw new Error('请输入合法的服务器 IPv4、IPv6 或域名，不要包含协议或端口。');
-  draft.ports = parsePorts(draft.ports);
   if (readDeployment(project).kind !== 'empty') throw new Error('已有部署文件；首次部署不会覆盖它们。请先查看诊断。');
   const version = composeImageTag(readFileSync(findPackageFile('compose.yaml'), 'utf8'));
   const plan: DeploymentPlan = { id: randomUUID(), kind: 'initial-deploy', baseRevision: deploymentRevision(project), files: Object.freeze([...files]), serverAddress: draft.serverAddress, listeners: deploymentListeners(draft.ports).map((listener) => `${listener.port}/${listener.protocol}`), isp: !!draft.isp, version, allowUnknownPorts };
